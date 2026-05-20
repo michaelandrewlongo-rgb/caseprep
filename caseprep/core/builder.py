@@ -8,6 +8,7 @@ persistence seams.
 from __future__ import annotations
 
 import inspect
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from typing import Any, Protocol
@@ -15,12 +16,19 @@ from typing import Any, Protocol
 from caseprep.profile_classifier import build_keywords, classify_profile
 from caseprep.persistence import CasePrepRunStore, resolve_caseprep_store
 from caseprep.provenance import build_core_provenance, enforce_provenance
+from caseprep.schema import AXIS_RELEVANCE, build_caseprep_schema, render_caseprep_files
+from caseprep.scoring import grade_evidence
 from caseprep.retrievers.corpus import CorpusRetriever
 from caseprep.retrievers.pubmed import PubMedRetriever
 from caseprep.retrievers.radiology import RadiologyRetriever
-from caseprep.synthesis.section_synthesis import synthesize_sections
+from caseprep.synthesis.section_synthesis import SectionDraft, synthesize_sections
 
-from .contracts import BuildCasePlanRequest, BuildCasePlanResult, EvidenceRecord
+from .contracts import (
+    ArtifactRef,
+    BuildCasePlanRequest,
+    BuildCasePlanResult,
+    EvidenceRecord,
+)
 from .errors import CasePrepError
 
 
@@ -65,6 +73,106 @@ class CoreRetrieverSet:
     pubmed: PubMedRetrieverProtocol
     radiology: RadiologyRetrieverProtocol
     corpus: CorpusRetrieverProtocol
+
+
+CORPUS_SUBDOMAIN_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "intracranial_hemorrhage",
+        (
+            "subdural",
+            "chronic subdural",
+            "csdh",
+            "middle meningeal",
+            "mma embolization",
+            "intracerebral hemorrhage",
+            "intracranial hemorrhage",
+            "hematoma",
+        ),
+    ),
+    (
+        "aneurysm_sah",
+        (
+            "aneurysm",
+            "subarachnoid",
+            "sah",
+            "coiling",
+            "clipping",
+            "vasospasm",
+        ),
+    ),
+    (
+        "stroke_thrombectomy",
+        (
+            "thrombectomy",
+            "large vessel occlusion",
+            "lvo",
+            "ischemic stroke",
+            "thrombolysis",
+        ),
+    ),
+    (
+        "avm_vascular_malformation",
+        (
+            "arteriovenous malformation",
+            "avm",
+            "dural arteriovenous fistula",
+            "davf",
+            "cavernous malformation",
+        ),
+    ),
+    (
+        "carotid_cervical_vascular",
+        (
+            "carotid",
+            "vertebral artery",
+            "cervical vascular",
+        ),
+    ),
+    (
+        "flow_diversion",
+        (
+            "flow diversion",
+            "flow diverter",
+            "pipeline",
+            "fred",
+            "surpass",
+            "web device",
+        ),
+    ),
+    (
+        "venous_interventional",
+        (
+            "venous sinus",
+            "iih",
+            "cerebral venous thrombosis",
+        ),
+    ),
+    (
+        "moyamoya",
+        (
+            "moyamoya",
+            "ec-ic bypass",
+            "cerebral revascularization",
+        ),
+    ),
+)
+
+CORPUS_PROFILE_FALLBACKS = {
+    "functional": "functional_epilepsy",
+    "pediatric": "pediatric_neurointerventional",
+    "spine": "spine_interventional",
+    "skull_base": "tumor_skull_base",
+    "supratentorial_tumor": "tumor_skull_base",
+}
+
+
+def resolve_corpus_subdomain(topic: str, profile: str) -> str | None:
+    """Map CasePrep profiles/topics onto local corpus subdomain IDs."""
+    normalized_topic = topic.lower()
+    for subdomain, keywords in CORPUS_SUBDOMAIN_KEYWORDS:
+        if any(keyword in normalized_topic for keyword in keywords):
+            return subdomain
+    return CORPUS_PROFILE_FALLBACKS.get(profile)
 
 
 def default_core_retrievers() -> CoreRetrieverSet:
@@ -121,6 +229,114 @@ def _source_counts(records: list[EvidenceRecord]) -> dict[str, int]:
     for record in records:
         counts[record.source] = counts.get(record.source, 0) + 1
     return counts
+
+
+def _evidence_year(record: EvidenceRecord) -> str:
+    for key in ("pubdate", "year"):
+        match = re.search(r"\b\d{4}\b", str(record.metadata.get(key, "")))
+        if match:
+            return match.group(0)
+    return ""
+
+
+def _evidence_level(record: EvidenceRecord) -> str:
+    pub_types = record.metadata.get("pub_types")
+    if isinstance(pub_types, list):
+        return grade_evidence([str(pub_type) for pub_type in pub_types]).label
+    evidence_tier = record.metadata.get("evidence_tier")
+    if evidence_tier:
+        return str(evidence_tier)
+    return ""
+
+
+def _key_source(record: EvidenceRecord) -> dict[str, str]:
+    axis = str(record.metadata.get("axis") or "").strip()
+    return {
+        "id": record.id,
+        "title": record.title,
+        "year": _evidence_year(record),
+        "evidence_level": _evidence_level(record),
+        "relevance": AXIS_RELEVANCE.get(axis, axis.lower() or record.source),
+        "verification": "cited",
+    }
+
+
+def _section_body(
+    sections: list[SectionDraft],
+    section_ids: set[str],
+) -> str | None:
+    bodies = [
+        f"### {section.title}\n\n{section.body}"
+        for section in sections
+        if section.id in section_ids and section.body.strip()
+    ]
+    return "\n\n".join(bodies) or None
+
+
+def _core_literature_summary(markdown: str) -> str:
+    return f"## Core Search Appendix\n\n{markdown}"
+
+
+def _write_core_artifacts(
+    *,
+    request: BuildCasePlanRequest,
+    profile: str,
+    evidence: list[EvidenceRecord],
+    sections: list[SectionDraft],
+    provenance: list[Any],
+    markdown: str,
+) -> list[ArtifactRef]:
+    schema = build_caseprep_schema(request.topic, profile=profile)
+    schema["case"]["evidence"]["key_sources"] = [
+        _key_source(record) for record in evidence if record.id
+    ]
+    schema["case"]["evidence"]["clinical_questions"] = [
+        f"What operative approach and setup best fit {request.topic}?",
+        f"What anatomy and imaging findings should change the plan for {request.topic}?",
+        f"What complications and rescue plans are most important for {request.topic}?",
+    ]
+    corpus_ids = {"corpus"}
+    rendered_files = render_caseprep_files(
+        schema,
+        provenance=provenance,
+        literature_summary=_core_literature_summary(markdown),
+        anatomy_body=_section_body(
+            sections,
+            {"anatomy-relevant-structures"} | corpus_ids,
+        ),
+        operative_body=_section_body(
+            sections,
+            {"surgical-technique"} | corpus_ids,
+        ),
+        risk_body=_section_body(
+            sections,
+            {"complications"} | corpus_ids,
+        ),
+    )
+
+    output_dir = request.resolved_output_dir()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    artifacts: list[ArtifactRef] = []
+    for filename, content in rendered_files.items():
+        path = output_dir / filename
+        path.write_text(content, encoding="utf-8")
+        artifacts.append(
+            ArtifactRef(
+                path=path,
+                kind="markdown" if filename.endswith(".md") else "data",
+                media_type=(
+                    "text/markdown"
+                    if filename.endswith(".md")
+                    else "application/json"
+                    if filename.endswith(".json")
+                    else "text/yaml"
+                    if filename.endswith(".yaml")
+                    else None
+                ),
+                label=filename,
+            )
+        )
+    return artifacts
 
 
 async def build_core_case_plan(
@@ -189,11 +405,15 @@ async def build_core_case_plan(
             )
         )
 
+    corpus_subdomain = resolve_corpus_subdomain(
+        request.topic,
+        classification.profile,
+    )
     try:
         corpus_records = await _maybe_await(
             provider_set.corpus.retrieve(
                 request.topic,
-                subdomain=classification.profile,
+                subdomain=corpus_subdomain,
                 top_n=max_per,
             )
         )
@@ -217,6 +437,7 @@ async def build_core_case_plan(
         },
         "retrieval": {
             "pubmed_axes": [label for label, _, _ in pubmed_axes],
+            "corpus_subdomain": corpus_subdomain,
             "evidence_count": len(evidence),
             "sources": _source_counts(evidence),
         },
@@ -257,11 +478,29 @@ async def build_core_case_plan(
         lines.extend(["", "## Warnings"])
         lines.extend(f"- {warning}" for warning in warnings)
 
+    markdown = "\n".join(lines)
+    artifacts: list[ArtifactRef] = []
+    if request.output_dir is not None:
+        try:
+            artifacts = _write_core_artifacts(
+                request=request,
+                profile=classification.profile,
+                evidence=evidence,
+                sections=sections,
+                provenance=provenance,
+                markdown=markdown,
+            )
+        except CasePrepError as exc:
+            warnings.append(f"Artifact rendering: {exc}")
+        except Exception as exc:
+            warnings.append(f"Artifact rendering: {exc}")
+
     result = BuildCasePlanResult(
         topic=request.topic,
-        markdown="\n".join(lines),
+        markdown=markdown,
         output_dir=request.resolved_output_dir(),
         mode="core",
+        artifacts=artifacts,
         evidence=evidence,
         provenance=provenance,
         structured=structured,

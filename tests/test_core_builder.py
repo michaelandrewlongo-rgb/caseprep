@@ -109,9 +109,149 @@ async def test_core_builder_classifies_profile_and_normalizes_retriever_evidence
     assert calls[-1] == (
         "corpus",
         "anterior communicating artery aneurysm clipping",
-        "vascular",
+        "aneurysm_sah",
         2,
     )
+
+
+@pytest.mark.asyncio
+async def test_core_builder_maps_mma_csdh_to_hemorrhage_corpus_subdomain():
+    calls = []
+
+    class EmptyPubMedRetriever:
+        async def retrieve(
+            self,
+            query,
+            *,
+            max_results=10,
+            filter_type=None,
+            include_abstracts=True,
+        ):
+            return []
+
+    class EmptyRadiologyRetriever:
+        async def retrieve(self, query, *, max_results=5, modality=None):
+            return []
+
+    class FakeCorpusRetriever:
+        def retrieve(self, fts_query, *, subdomain=None, top_n=8):
+            calls.append((fts_query, subdomain, top_n))
+            return [
+                EvidenceRecord(
+                    id="corpus-csdh",
+                    source="corpus",
+                    title="MMA embolization for chronic subdural hematoma",
+                    text="MMA embolization evidence.",
+                )
+            ]
+
+    result = await build_core_case_plan(
+        BuildCasePlanRequest(
+            topic="middle meningeal artery embolization chronic subdural hematoma",
+            max_per_category=1,
+        ),
+        retrievers=CoreRetrieverSet(
+            pubmed=EmptyPubMedRetriever(),
+            radiology=EmptyRadiologyRetriever(),
+            corpus=FakeCorpusRetriever(),
+        ),
+    )
+
+    assert calls == [
+        (
+            "middle meningeal artery embolization chronic subdural hematoma",
+            "intracranial_hemorrhage",
+            1,
+        )
+    ]
+    assert result.structured["retrieval"]["sources"]["corpus"] == 1
+
+
+@pytest.mark.asyncio
+async def test_core_builder_writes_synthesized_sections_to_dossier_files(tmp_path):
+    class FakePubMedRetriever:
+        async def retrieve(
+            self,
+            query,
+            *,
+            max_results=10,
+            filter_type=None,
+            include_abstracts=True,
+        ):
+            if filter_type == "therapy":
+                return []
+            if "surgical technique" in query:
+                return [
+                    EvidenceRecord(
+                        id="pmid-technique",
+                        source="pubmed",
+                        title="Technique Evidence",
+                        text="Use bilateral distal middle meningeal artery access.",
+                        metadata={"pubdate": "2024", "axis": "Surgical Technique"},
+                    )
+                ]
+            if "complications" in query:
+                return [
+                    EvidenceRecord(
+                        id="pmid-complication",
+                        source="pubmed",
+                        title="Complication Evidence",
+                        text="Postprocedure seizure risk requires monitoring.",
+                        metadata={"pubdate": "2025", "axis": "Complications"},
+                    )
+                ]
+            return [
+                EvidenceRecord(
+                    id="pmid-anatomy",
+                    source="pubmed",
+                    title="Anatomy Evidence",
+                    text="The middle meningeal artery supplies the dura.",
+                    metadata={
+                        "pubdate": "2023",
+                        "axis": "Anatomy / Relevant Structures",
+                    },
+                )
+            ]
+
+    class EmptyRadiologyRetriever:
+        async def retrieve(self, query, *, max_results=5, modality=None):
+            return []
+
+    class EmptyCorpusRetriever:
+        def retrieve(self, fts_query, *, subdomain=None, top_n=8):
+            return []
+
+    output_dir = tmp_path / "mma-csdh-caseprep"
+
+    result = await build_core_case_plan(
+        BuildCasePlanRequest(
+            topic="middle meningeal artery embolization chronic subdural hematoma",
+            output_dir=output_dir,
+            max_per_category=1,
+        ),
+        retrievers=CoreRetrieverSet(
+            pubmed=FakePubMedRetriever(),
+            radiology=EmptyRadiologyRetriever(),
+            corpus=EmptyCorpusRetriever(),
+        ),
+    )
+
+    anatomy = (output_dir / "03-anatomy-at-risk.md").read_text(encoding="utf-8")
+    operative = (output_dir / "04-operative-plan.md").read_text(encoding="utf-8")
+    risk = (output_dir / "05-risk-and-rescue.md").read_text(encoding="utf-8")
+    evidence = (output_dir / "07-evidence.md").read_text(encoding="utf-8")
+
+    assert "The middle meningeal artery supplies the dura. [pmid-anatomy]" in anatomy
+    assert (
+        "Use bilateral distal middle meningeal artery access. [pmid-technique]"
+        in operative
+    )
+    assert (
+        "Postprocedure seizure risk requires monitoring. [pmid-complication]"
+        in risk
+    )
+    assert "pmid-anatomy" in evidence
+    assert "03-anatomy-at-risk.md" in {artifact.path.name for artifact in result.artifacts}
 
 
 @pytest.mark.asyncio
