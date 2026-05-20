@@ -80,6 +80,18 @@ async def test_core_builder_classifies_profile_and_normalizes_retriever_evidence
         "Complications",
         "Reviews / Landmarks",
     ]
+    assert result.structured["sections"][0]["id"] == "anatomy-relevant-structures"
+    assert result.structured["sections"][0]["evidence_ids"] == ["pmid-1"]
+    assert any(
+        record.field_path == "sections.anatomy-relevant-structures"
+        and record.source_ids == ["pmid-1"]
+        for record in result.provenance
+    )
+    assert any(
+        record.field_path == "profile"
+        and record.value_status == "generated"
+        for record in result.provenance
+    )
     assert {record.source for record in result.evidence} == {
         "corpus",
         "openi",
@@ -99,4 +111,43 @@ async def test_core_builder_classifies_profile_and_normalizes_retriever_evidence
         "anterior communicating artery aneurysm clipping",
         "vascular",
         2,
+    )
+
+
+@pytest.mark.asyncio
+async def test_core_builder_strict_provenance_warn_mode_surfaces_warnings(monkeypatch):
+    class EmptyPubMedRetriever:
+        async def retrieve(
+            self,
+            query,
+            *,
+            max_results=10,
+            filter_type=None,
+            include_abstracts=True,
+        ):
+            return []
+
+    class EmptyRadiologyRetriever:
+        async def retrieve(self, query, *, max_results=5, modality=None):
+            return []
+
+    class EmptyCorpusRetriever:
+        def retrieve(self, fts_query, *, subdomain=None, top_n=8):
+            return []
+
+    monkeypatch.setenv("CASEPREP_STRICT_PROVENANCE", "warn")
+
+    result = await build_core_case_plan(
+        BuildCasePlanRequest(topic="aneurysm", max_per_category=1),
+        retrievers=CoreRetrieverSet(
+            pubmed=EmptyPubMedRetriever(),
+            radiology=EmptyRadiologyRetriever(),
+            corpus=EmptyCorpusRetriever(),
+        ),
+    )
+
+    assert any(
+        warning
+        == "Provenance warning: Required field sections has no provenance-backed value"
+        for warning in result.warnings
     )

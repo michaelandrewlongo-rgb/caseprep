@@ -13,9 +13,11 @@ from dataclasses import dataclass, replace
 from typing import Any, Protocol
 
 from caseprep.profile_classifier import build_keywords, classify_profile
+from caseprep.provenance import build_core_provenance, enforce_provenance
 from caseprep.retrievers.corpus import CorpusRetriever
 from caseprep.retrievers.pubmed import PubMedRetriever
 from caseprep.retrievers.radiology import RadiologyRetriever
+from caseprep.synthesis.section_synthesis import synthesize_sections
 
 from .contracts import BuildCasePlanRequest, BuildCasePlanResult, EvidenceRecord
 from .errors import CasePrepError
@@ -107,8 +109,8 @@ def _tag_evidence(
     tagged: list[EvidenceRecord] = []
     for record in records:
         metadata = dict(record.metadata)
-        metadata.setdefault("axis", axis)
-        metadata.setdefault("query", query)
+        metadata["axis"] = axis
+        metadata["query"] = query
         tagged.append(replace(record, metadata=metadata))
     return tagged
 
@@ -216,6 +218,21 @@ async def build_core_case_plan(
             "sources": _source_counts(evidence),
         },
     }
+    sections = synthesize_sections(request.topic, evidence)
+    structured["sections"] = [section.to_dict() for section in sections]
+    provenance = build_core_provenance(
+        structured=structured,
+        evidence=evidence,
+        sections=sections,
+    )
+    warnings.extend(
+        enforce_provenance(
+            structured=structured,
+            provenance=provenance,
+            evidence=evidence,
+            required_fields=["profile", "retrieval", "sections"],
+        )
+    )
 
     lines = [
         f"# Core Case Plan - {request.topic}",
@@ -229,6 +246,10 @@ async def build_core_case_plan(
     ]
     for source, count in sorted(structured["retrieval"]["sources"].items()):
         lines.append(f"- {source}: {count}")
+    if sections:
+        lines.extend(["", "## Draft Sections"])
+        for section in sections:
+            lines.extend([f"### {section.title}", section.body])
     if warnings:
         lines.extend(["", "## Warnings"])
         lines.extend(f"- {warning}" for warning in warnings)
@@ -239,6 +260,7 @@ async def build_core_case_plan(
         output_dir=request.resolved_output_dir(),
         mode="core",
         evidence=evidence,
+        provenance=provenance,
         structured=structured,
         warnings=warnings,
     )
