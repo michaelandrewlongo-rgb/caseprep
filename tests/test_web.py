@@ -7,14 +7,40 @@ import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
-from fastapi.testclient import TestClient
 
 from caseprep.db import CasePrepDB
 from caseprep.web import app, get_db
 
 
 # ── Fixtures ────────────────────────────────────────────────────────────────
+
+class ASGISyncClient:
+    """Small sync wrapper around httpx.ASGITransport for FastAPI tests."""
+
+    def __init__(self, app):
+        self.app = app
+
+    def get(self, url: str, **kwargs) -> httpx.Response:
+        return self._request("GET", url, **kwargs)
+
+    def post(self, url: str, **kwargs) -> httpx.Response:
+        return self._request("POST", url, **kwargs)
+
+    def _request(self, method: str, url: str, **kwargs) -> httpx.Response:
+        import asyncio
+
+        async def send_request() -> httpx.Response:
+            transport = httpx.ASGITransport(app=self.app)
+            async with httpx.AsyncClient(
+                transport=transport,
+                base_url="http://testserver",
+            ) as async_client:
+                return await async_client.request(method, url, **kwargs)
+
+        return asyncio.run(send_request())
+
 
 @pytest.fixture
 def tmp_db(tmp_path):
@@ -58,11 +84,11 @@ def tmp_db(tmp_path):
 
 @pytest.fixture
 def client(tmp_db):
-    """Sync TestClient wired to the FastAPI app with our test DB."""
+    """Sync ASGI client wired to the FastAPI app with our test DB."""
     import caseprep.web as web_mod
     web_mod._db = tmp_db  # set the module-level singleton
 
-    tc = TestClient(app)
+    tc = ASGISyncClient(app)
     yield tc
 
     web_mod._db = None
@@ -159,14 +185,27 @@ def test_get_fulltext_mocked(client):
 
 
 def test_build_caseplan_mocked(client):
-    with patch("caseprep.web._handle_build_caseplan", new_callable=AsyncMock) as mock:
-        mock.return_value = (
-            "## Case Plan\n\n"
-            "Outcomes: 3 papers found\n\n"
-            "---\n"
-            "Case plan written to /tmp/vestibular-schwannoma-caseprep/\n"
-            "Canonical files: caseprep.yaml, 01-case-summary.md"
-        )
+    from caseprep.core import BuildCasePlanResult
+
+    seen_requests = []
+
+    class FakeBuilder:
+        async def build_case_plan(self, request):
+            seen_requests.append(request)
+            return BuildCasePlanResult(
+                topic=request.topic,
+                markdown=(
+                    "## Case Plan\n\n"
+                    "Outcomes: 3 papers found\n\n"
+                    "---\n"
+                    "Case plan written to /tmp/vestibular-schwannoma-caseprep/\n"
+                    "Canonical files: caseprep.yaml, 01-case-summary.md"
+                ),
+                output_dir=request.resolved_output_dir(),
+                mode="legacy",
+            )
+
+    with patch("caseprep.web.CasePlanBuilder", FakeBuilder):
         resp = client.post("/api/build?topic=vestibular+schwannoma")
         assert resp.status_code == 200
         data = resp.json()
@@ -174,6 +213,8 @@ def test_build_caseplan_mocked(client):
         assert "Case Plan" in data["summary"]
         assert data["output_dir"].endswith("vestibular-schwannoma-caseprep")
         assert "caseprep.yaml" in data["summary"]
+        assert seen_requests[0].topic == "vestibular schwannoma"
+        assert seen_requests[0].max_per_category == 3
 
 
 # ── DB persistence after API calls ──────────────────────────────────────────

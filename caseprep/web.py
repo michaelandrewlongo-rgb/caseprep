@@ -15,9 +15,9 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from caseprep.core import BuildCasePlanRequest, CasePlanBuilder
 from caseprep.db import CasePrepDB, DEFAULT_DB_PATH
 from caseprep.mcp_server import (
-    _handle_build_caseplan,
     _handle_get_fulltext,
     _handle_pubmed,
     _handle_radiology,
@@ -106,11 +106,13 @@ async def api_build_caseplan(
     slug = topic.strip().lower().replace(" ", "-")
     output_dir = str(Path.cwd() / f"{slug}-caseprep")
 
-    # Run the existing handler (returns markdown text)
-    result = await _safe_call(_handle_build_caseplan, {
-        "topic": topic,
-        "max_per_category": max_per_category,
-    })
+    request = BuildCasePlanRequest(
+        topic=topic,
+        output_dir=output_dir,
+        max_per_category=max_per_category,
+    )
+    result_obj = await CasePlanBuilder().build_case_plan(request)
+    result = result_obj.markdown
 
     # Persist the case plan
     cp_id = db.save_caseplan(topic, slug, output_dir, summary=result[:2000])
