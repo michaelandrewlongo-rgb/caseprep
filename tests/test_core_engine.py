@@ -9,10 +9,12 @@ import pytest
 from caseprep.core import (
     ArtifactRef,
     BuildCasePlanRequest,
+    BuildCasePlanResult,
     CasePlanBuilder,
     CasePrepConfigurationError,
     CasePrepExternalServiceError,
     CasePrepValidationError,
+    EvidenceRecord,
     resolve_core_mode,
 )
 
@@ -122,7 +124,29 @@ async def test_case_plan_builder_legacy_mode_delegates_to_legacy_builder(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_case_plan_builder_shadow_mode_returns_legacy_output_with_warning():
+async def test_case_plan_builder_shadow_mode_runs_default_core_builder(monkeypatch):
+    async def fake_core_builder(request):
+        return BuildCasePlanResult(
+            topic=request.topic,
+            markdown="core diagnostic output",
+            output_dir=request.resolved_output_dir(),
+            mode="core",
+            evidence=[
+                EvidenceRecord(
+                    id="pmid-1",
+                    source="pubmed",
+                    title="Aneurysm evidence",
+                )
+            ],
+            structured={"profile": {"name": "vascular"}},
+            warnings=["core warning"],
+        )
+
+    monkeypatch.setattr(
+        "caseprep.core.builder.build_core_case_plan",
+        fake_core_builder,
+    )
+
     async def legacy_builder(request: BuildCasePlanRequest) -> str:
         return "legacy output"
 
@@ -132,8 +156,58 @@ async def test_case_plan_builder_shadow_mode_returns_legacy_output_with_warning(
 
     assert result.markdown == "legacy output"
     assert result.mode == "shadow"
+    assert result.warnings == []
+    assert result.shadow == {
+        "mode": "core",
+        "markdown": "core diagnostic output",
+        "structured": {"profile": {"name": "vascular"}},
+        "warnings": ["core warning"],
+        "artifacts": [],
+        "evidence": [
+            {
+                "id": "pmid-1",
+                "source": "pubmed",
+                "title": "Aneurysm evidence",
+                "url": None,
+                "text": "",
+                "metadata": {},
+            }
+        ],
+        "provenance": [],
+    }
+
+
+@pytest.mark.asyncio
+async def test_case_plan_builder_shadow_mode_preserves_legacy_when_core_fails():
+    async def legacy_builder(request: BuildCasePlanRequest) -> str:
+        return "legacy output"
+
+    async def core_builder(request: BuildCasePlanRequest) -> BuildCasePlanResult:
+        raise CasePrepExternalServiceError(
+            "PubMed retrieval failed",
+            details={"provider": "pubmed"},
+        )
+
+    builder = CasePlanBuilder(
+        mode="shadow",
+        legacy_builder=legacy_builder,
+        core_builder=core_builder,
+    )
+
+    result = await builder.build_case_plan(BuildCasePlanRequest(topic="aneurysm"))
+
+    assert result.markdown == "legacy output"
+    assert result.mode == "shadow"
+    assert result.shadow == {
+        "mode": "core",
+        "error": {
+            "error": "external_service_error",
+            "message": "PubMed retrieval failed",
+            "details": {"provider": "pubmed"},
+        },
+    }
     assert result.warnings == [
-        "CASEPREP_CORE_MODE=shadow ran legacy only because no core builder is configured."
+        "CASEPREP_CORE_MODE=shadow core builder failed: PubMed retrieval failed"
     ]
 
 

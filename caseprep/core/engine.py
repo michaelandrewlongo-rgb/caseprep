@@ -13,7 +13,7 @@ from dataclasses import replace
 from typing import Awaitable, Callable, Mapping
 
 from .contracts import BuildCasePlanRequest, BuildCasePlanResult, CoreMode
-from .errors import CasePrepConfigurationError
+from .errors import CasePrepConfigurationError, CasePrepError
 
 
 VALID_CORE_MODES: set[str] = {"legacy", "shadow", "core"}
@@ -50,6 +50,14 @@ async def _default_legacy_build_caseplan(request: BuildCasePlanRequest) -> str:
     from caseprep.mcp_server import _legacy_handle_build_caseplan
 
     return await _legacy_handle_build_caseplan(request.to_legacy_args())
+
+
+async def _default_core_build_caseplan(
+    request: BuildCasePlanRequest,
+) -> BuildCasePlanResult:
+    from caseprep.core.builder import build_core_case_plan
+
+    return await build_core_case_plan(request)
 
 
 class CasePlanBuilder:
@@ -93,15 +101,33 @@ class CasePlanBuilder:
 
     async def _run_shadow(self, request: BuildCasePlanRequest) -> BuildCasePlanResult:
         legacy_result = await self._run_legacy(request, mode="shadow")
-        if self._core_builder is None:
+        core_builder = self._core_builder or _default_core_build_caseplan
+        try:
+            core_result = await _maybe_await(core_builder(request))
+        except CasePrepError as exc:
             return replace(
                 legacy_result,
                 warnings=legacy_result.warnings + [
-                    "CASEPREP_CORE_MODE=shadow ran legacy only because no core builder is configured."
+                    f"CASEPREP_CORE_MODE=shadow core builder failed: {exc}"
                 ],
+                shadow={"mode": "core", "error": exc.to_dict()},
+            )
+        except Exception as exc:
+            return replace(
+                legacy_result,
+                warnings=legacy_result.warnings + [
+                    f"CASEPREP_CORE_MODE=shadow core builder failed: {exc}"
+                ],
+                shadow={
+                    "mode": "core",
+                    "error": {
+                        "error": "core_builder_error",
+                        "message": str(exc),
+                        "details": {},
+                    },
+                },
             )
 
-        core_result = await _maybe_await(self._core_builder(request))
         return replace(
             legacy_result,
             shadow={
@@ -109,6 +135,13 @@ class CasePlanBuilder:
                 "markdown": core_result.markdown,
                 "structured": core_result.structured,
                 "warnings": core_result.warnings,
+                "artifacts": [
+                    artifact.to_dict() for artifact in core_result.artifacts
+                ],
+                "evidence": [record.to_dict() for record in core_result.evidence],
+                "provenance": [
+                    record.to_dict() for record in core_result.provenance
+                ],
             },
         )
 
