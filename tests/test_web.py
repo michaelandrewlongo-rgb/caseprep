@@ -217,6 +217,60 @@ def test_build_caseplan_mocked(client):
         assert seen_requests[0].max_per_category == 3
 
 
+def test_build_caseplan_uses_dependency_injected_engine(client):
+    import caseprep.web as web_mod
+    from caseprep.core import BuildCasePlanResult
+
+    seen_requests = []
+
+    class FakeBuilder:
+        async def build_case_plan(self, request):
+            seen_requests.append(request)
+            return BuildCasePlanResult(
+                topic=request.topic,
+                markdown="dependency output",
+                output_dir=request.resolved_output_dir(),
+                mode="legacy",
+            )
+
+    web_mod.app.dependency_overrides[web_mod.get_caseplan_builder] = FakeBuilder
+    try:
+        resp = client.post("/api/build?topic=aneurysm+clipping&max_per_category=2")
+    finally:
+        web_mod.app.dependency_overrides.pop(web_mod.get_caseplan_builder, None)
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["summary"] == "dependency output"
+    assert seen_requests[0].topic == "aneurysm clipping"
+    assert seen_requests[0].max_per_category == 2
+
+
+def test_build_caseplan_maps_domain_errors_to_http(client):
+    import caseprep.web as web_mod
+    from caseprep.core import CasePrepValidationError
+
+    class FailingBuilder:
+        async def build_case_plan(self, request):
+            raise CasePrepValidationError(
+                "topic is required",
+                details={"field": "topic"},
+            )
+
+    web_mod.app.dependency_overrides[web_mod.get_caseplan_builder] = FailingBuilder
+    try:
+        resp = client.post("/api/build?topic=aneurysm")
+    finally:
+        web_mod.app.dependency_overrides.pop(web_mod.get_caseplan_builder, None)
+
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == {
+        "error": "validation_error",
+        "message": "topic is required",
+        "details": {"field": "topic"},
+    }
+
+
 # ── DB persistence after API calls ──────────────────────────────────────────
 
 def test_search_persists_to_history(client, tmp_db):

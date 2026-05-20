@@ -26,7 +26,8 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
-from caseprep.core import BuildCasePlanRequest, CasePlanBuilder
+from caseprep.adapters.caseplan import build_caseplan_markdown
+from caseprep.core import CasePlanBuilder
 from caseprep.generator import generate_caseprep as _generate_caseprep
 from caseprep.knowledge_graph import build_enriched_query
 from caseprep.links import build_search_links
@@ -1283,9 +1284,7 @@ async def _handle_pubmed(args: dict) -> str:
 
 
 async def _handle_build_caseplan(args: dict) -> str:
-    request = BuildCasePlanRequest.from_mapping(args)
-    result = await CasePlanBuilder().build_case_plan(request)
-    return result.markdown
+    return await build_caseplan_markdown(args, builder_factory=CasePlanBuilder)
 
 
 async def _legacy_handle_build_caseplan(args: dict) -> str:
