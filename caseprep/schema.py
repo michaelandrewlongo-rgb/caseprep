@@ -714,6 +714,9 @@ def article_to_citation(article: dict[str, Any], axis: str) -> dict[str, Any]:
     pmid = str(article.get("pmid", "")).strip()
     title = article.get("title", "")
     citation_id = f"pmid-{pmid}" if pmid else _fallback_source_id(str(title))
+    # Extract evidence level from _evidence_grade if available
+    _eg = article.get("_evidence_grade")
+    evidence_level = _eg.label if _eg else ""
     return {
         "id": citation_id,
         "type": "journal_article",
@@ -725,7 +728,7 @@ def article_to_citation(article: dict[str, Any], axis: str) -> dict[str, Any]:
         "url": article.get("url", ""),
         "pmid": pmid,
         "doi": article.get("doi", ""),
-        "evidence_level": "",
+        "evidence_level": evidence_level,
         "relevance": AXIS_RELEVANCE.get(axis, axis.lower()),
         "summary": article.get("_abstract", "")[:500],
         "quoted_text": "",

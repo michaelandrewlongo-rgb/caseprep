@@ -5,7 +5,6 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from caseprep.mcp_server import (
-    _extract_relevant_sentences,
     _detect_profile,
     _build_keywords,
     _BASE_ANATOMY,
@@ -14,7 +13,6 @@ from caseprep.mcp_server import (
     _fmt_corpus_paper,
     _handle_search_corpus,
     _corpus_search,
-    _populate_section,
 )
 
 
@@ -97,16 +95,12 @@ class TestStructuredCaseDossierOutput:
             "Complications": [],
         }
 
-        async def fake_populate(**kwargs):
-            return f"# {kwargs['section_title']} - {kwargs['topic']}\n\nGenerated section body."
-
-        with patch("caseprep.mcp_server._populate_section", side_effect=fake_populate):
-            await _write_filled_templates(
-                tmp_path,
-                "retrosigmoid vestibular schwannoma",
-                "# Case Plan\n\nPaper summary",
-                axis_data,
-            )
+        await _write_filled_templates(
+            tmp_path,
+            "retrosigmoid vestibular schwannoma",
+            "# Case Plan\n\nPaper summary",
+            axis_data,
+        )
 
         for filename in [
             "caseprep.yaml",
@@ -130,163 +124,6 @@ class TestStructuredCaseDossierOutput:
         assert (tmp_path / "approach.md").read_text() == (tmp_path / "04-operative-plan.md").read_text()
         assert (tmp_path / "complications.md").read_text() == (tmp_path / "05-risk-and-rescue.md").read_text()
         assert (tmp_path / "literature.md").read_text() == (tmp_path / "07-evidence.md").read_text()
-
-
-class TestExtractRelevantSentences:
-    def test_extracts_anatomy_sentences(self):
-        articles = [{
-            "_abstract": (
-                "The cerebellopontine angle contains the facial nerve and "
-                "vestibulocochlear nerve. The anterior inferior cerebellar artery "
-                "courses through the cistern. Anatomic variants of the sigmoid "
-                "sinus may affect the surgical corridor."
-            ),
-            "_structured": {},
-        }]
-        keywords = _BASE_ANATOMY + ["cranial nerve", "cerebellopontine", "sigmoid"]
-        result = _extract_relevant_sentences(articles, keywords)
-        # All sentences should match (low keyword density, score=1 or 2 each)
-        assert len(result) >= 2
-        assert any("nerve" in s.lower() for s in result)
-
-    def test_extracts_approach_sentences(self):
-        articles = [{
-            "_abstract": (
-                "The retrosigmoid approach provides excellent exposure. "
-                "Intraoperative neuromonitoring with facial nerve EMG reduces "
-                "the risk of postoperative deficit. The craniotomy should expose "
-                "the transverse-sigmoid junction."
-            ),
-            "_structured": {},
-        }]
-        keywords = _BASE_APPROACH + ["retrosigmoid", "emg"]
-        result = _extract_relevant_sentences(articles, keywords)
-        # All sentences should match with ≥1 keyword hit
-        assert len(result) >= 2
-
-    def test_extracts_complication_sentences(self):
-        articles = [{
-            "_abstract": (
-                "CSF leak occurred in 8% of patients. The mortality rate was "
-                "less than 1%. Meningitis was observed in 2% of cases. "
-                "Facial nerve palsy was the most common complication at 12%."
-            ),
-            "_structured": {},
-        }]
-        keywords = _BASE_COMPLICATIONS + ["csf leak", "facial nerve"]
-        result = _extract_relevant_sentences(articles, keywords)
-        assert len(result) >= 2
-        assert any("%" in s for s in result)
-
-    def test_empty_articles_returns_empty(self):
-        result = _extract_relevant_sentences([], _BASE_ANATOMY)
-        assert result == []
-
-    def test_no_matching_keywords_returns_empty(self):
-        articles = [{
-            "_abstract": "The weather was sunny with clear skies.",
-            "_structured": {},
-        }]
-        result = _extract_relevant_sentences(articles, _BASE_ANATOMY)
-        assert result == []
-
-    def test_respects_char_budget(self):
-        """Sentences should be capped by char_budget, not sentence count."""
-        articles = [{
-            "_abstract": (
-                "The artery was dissected carefully. The nerve was identified. "
-                "The cistern was opened. The cortex was retracted. "
-                "The vein was preserved. The tract was avoided. "
-                "The fissure was explored. The sulcus was traced. "
-                "The gyrus was mapped. The ventricle was entered."
-            ),
-            "_structured": {},
-        }]
-        result = _extract_relevant_sentences(articles, _BASE_ANATOMY, char_budget=150)
-        total_chars = sum(len(s) for s in result)
-        assert total_chars <= 150
-        assert len(result) >= 1  # should fit at least one sentence
-
-    def test_uses_structured_abstract(self):
-        articles = [{
-            "_abstract": "",
-            "_structured": {
-                "METHODS": "We used a retrosigmoid craniotomy approach with "
-                           "facial nerve monitoring and continuous EMG.",
-                "RESULTS": "CSF leak rate was 5% and meningitis rate was 1%.",
-            },
-        }]
-        approach_kw = _BASE_APPROACH + ["retrosigmoid", "emg"]
-        complication_kw = _BASE_COMPLICATIONS + ["csf leak", "facial nerve"]
-        approach_result = _extract_relevant_sentences(articles, approach_kw)
-        complication_result = _extract_relevant_sentences(articles, complication_kw)
-        assert len(approach_result) > 0 or len(complication_result) > 0
-
-    def test_single_keyword_hit_included(self):
-        """Sentences with exactly 1 keyword hit should be included (score ≥ 1)."""
-        articles = [{
-            "_abstract": (
-                "The patient underwent surgery. The retrosigmoid approach was used. "
-                "The standard craniotomy was performed. The dura was closed. "
-                "Neuromonitoring was employed throughout the procedure."
-            ),
-            "_structured": {},
-        }]
-        keywords = _BASE_APPROACH + ["retrosigmoid"]
-        result = _extract_relevant_sentences(articles, keywords)
-        # Every sentence has at least one keyword: surgery(none), approach+retrosigmoid(2),
-        # craniotomy(1), dura(1), neuromonitoring+monitoring(2)
-        # "surgery" is NOT in _BASE_APPROACH, so that sentence drops
-        assert len(result) >= 3
-
-    def test_supratentorial_profile_extracts_gbm_anatomy(self):
-        """GBM-relevant keywords should extract supratentorial anatomy."""
-        articles = [{
-            "_abstract": (
-                "The tumor was located in the left frontal lobe adjacent to "
-                "Broca's area and the supplementary motor cortex. "
-                "Eloquent cortex was mapped intraoperatively. "
-                "The corticospinal tract was visualized with DTI tractography."
-            ),
-            "_structured": {},
-        }]
-        kw = _build_keywords("supratentorial_tumor")
-        result = _extract_relevant_sentences(articles, kw["anatomy"])
-        assert len(result) >= 2
-        assert any("broca" in s.lower() or "eloquent" in s.lower() or "frontal" in s.lower() for s in result)
-
-    def test_vascular_profile_extracts_aneurysm_anatomy(self):
-        """Vascular keywords should extract aneurysm-specific anatomy."""
-        articles = [{
-            "_abstract": (
-                "The anterior communicating artery aneurysm arose at the "
-                "A1-A2 junction. The perforator arising from the A1 segment "
-                "was preserved during clipping. The interhemispheric approach "
-                "provided good exposure of the AComA complex."
-            ),
-            "_structured": {},
-        }]
-        kw = _build_keywords("vascular")
-        result = _extract_relevant_sentences(articles, kw["anatomy"])
-        assert len(result) >= 2
-        assert any("acoma" in s.lower() or "anterior communicating" in s.lower() or "perforator" in s.lower() for s in result)
-
-    def test_sorted_by_relevance(self):
-        """Highest keyword-density sentences should come first."""
-        articles = [{
-            "_abstract": (
-                "The patient recovered well. The cerebellopontine angle cistern "
-                "contains the facial nerve and vestibulocochlear nerve. "
-                "The approach was standard."
-            ),
-            "_structured": {},
-        }]
-        keywords = _BASE_ANATOMY + ["cranial nerve", "cerebellopontine", "cistern"]
-        result = _extract_relevant_sentences(articles, keywords)
-        if len(result) >= 2:
-            # The CPA sentence should be first (highest keyword density: cerebellopontine, cistern, nerve)
-            first = result[0].lower()
-            assert "cerebellopontine" in first or "cistern" in first
 
 
 # ── Guardrail tests ────────────────────────────────────────────────────────
@@ -485,35 +322,3 @@ class TestCorpusFormatting:
         assert result["papers"] == []
         assert result["total_matches"] == 0
         assert conn.closed
-
-
-class TestGuardrailRetry:
-    @pytest.mark.asyncio
-    async def test_numeric_retry_preserves_source_numbering(self):
-        sources = [
-            "The retrosigmoid approach was used for tumor exposure.",
-            "Meningitis rate was 1.5% in the retrosigmoid approach group.",
-        ]
-
-        synthesize = AsyncMock(side_effect=[
-            "- Meningitis rate was 50% [S2]",
-            "- Meningitis rate was 1.5% [S2]",
-        ])
-
-        with (
-            patch("caseprep.mcp_server._extract_relevant_sentences", return_value=sources),
-            patch("caseprep.llm.synthesize_section", synthesize),
-        ):
-            output = await _populate_section(
-                articles=[{"_abstract": "unused", "_structured": {}}],
-                keywords=["meningitis"],
-                template_sections=[("Postoperative", "(infection rates)")],
-                topic="vestibular schwannoma",
-                section_title="Complications",
-            )
-
-        assert synthesize.await_count == 2
-        assert synthesize.await_args_list[1].kwargs["source_sentences"] == sources
-        assert "All 1 claims verified" in output
-        assert "LLM synthesis rejected" not in output
-        assert "- Meningitis rate was 1.5% [S2]" in output

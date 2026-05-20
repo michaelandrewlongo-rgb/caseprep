@@ -27,12 +27,20 @@ from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
 from caseprep.generator import generate_caseprep as _generate_caseprep
+from caseprep.knowledge_graph import build_enriched_query
 from caseprep.links import build_search_links
 from caseprep.pdfs import format_pdf_results, search_local_pdfs as _search_local_pdfs
 from caseprep.schema import (
     build_caseprep_schema,
     build_caseprep_schema_from_axis_data,
     render_caseprep_files,
+)
+from caseprep.scoring import (
+    EvidenceGrade,
+    classify_study_type,
+    extract_n_value,
+    grade_evidence,
+    neurosurg_relevance_score,
 )
 
 # ── Load .env file ───────────────────────────────────────────────────────────
@@ -265,12 +273,16 @@ async def _pubmed_summaries(pmids: list[str]) -> list[dict]:
         a = data.get("result", {}).get(pmid, {})
         if not a or "uid" not in a:
             continue
+        pub_types = a.get("pubtype", [])
+        if isinstance(pub_types, str):
+            pub_types = [pub_types]
         results.append({
             "pmid": a.get("uid", ""),
             "title": a.get("title", ""),
             "authors": _fmt_authors(a.get("authors", [])),
             "source": a.get("source", ""),
             "pubdate": a.get("pubdate", ""),
+            "pub_types": pub_types,
             "doi": a.get("elocationid", "").replace("doi: ", "")
                    if a.get("elocationid", "") else "",
             "url": f"https://pubmed.ncbi.nlm.nih.gov/{a.get('uid', '')}/",
@@ -788,6 +800,7 @@ def _fmt_paper(
     structured: dict[str, str] | None = None,
     fulltext: str | None = None,
     evidence_tier: str | None = None,
+    evidence_grade: EvidenceGrade | None = None,
     study_design: str | None = None,
     citation_count: int | None = None,
 ) -> list[str]:
@@ -807,6 +820,8 @@ def _fmt_paper(
 
     # Evidence tier + study design (when available from local corpus or PubMed)
     meta_parts = []
+    if evidence_grade:
+        meta_parts.append(f"{evidence_grade.label} ({evidence_grade.quality_label})")
     if evidence_tier:
         label = EVIDENCE_TIER_LABELS.get(evidence_tier, evidence_tier)
         meta_parts.append(label)
@@ -1239,13 +1254,27 @@ async def _handle_pubmed(args: dict) -> str:
     if include_abstracts:
         abstracts = await _pubmed_abstracts([a["pmid"] for a in articles])
 
+    for article in articles:
+        abstract = abstracts.get(article["pmid"])
+        article["_relevance_score"] = neurosurg_relevance_score(
+            article.get("title", ""),
+            abstract,
+        )
+        article["_evidence_grade"] = grade_evidence(article.get("pub_types", []))
+    articles.sort(key=lambda a: a.get("_relevance_score", 0.0), reverse=True)
+
     filter_note = f" — filter: {filter_type}" if filter_type else ""
     lines = [
         f"## PubMed{filter_note} — {query}",
         f"({len(articles)} shown of {total} total)\n",
     ]
     for i, a in enumerate(articles, 1):
-        lines.extend(_fmt_paper(a, i, abstract=abstracts.get(a["pmid"])))
+        lines.extend(_fmt_paper(
+            a,
+            i,
+            abstract=abstracts.get(a["pmid"]),
+            evidence_grade=a.get("_evidence_grade"),
+        ))
 
     return "\n".join(lines)
 
@@ -1267,7 +1296,7 @@ async def _handle_build_caseplan(args: dict) -> str:
     # Generic "anatomy relevant structures" returns treatment papers;
     # injecting top profile anatomy keywords focuses PubMed on actual anatomy.
     top_anatomy_terms = profile_kw["anatomy"][:5]  # top 5 domain-specific terms
-    anatomy_query = f"{topic} {' '.join(top_anatomy_terms)}"
+    anatomy_query = build_enriched_query(topic, top_anatomy_terms)
     # Keep query under PubMed's practical length (~256 chars works well)
     if len(anatomy_query) > 200:
         anatomy_query = anatomy_query[:200].rsplit(" ", 1)[0]
@@ -1305,8 +1334,16 @@ async def _handle_build_caseplan(args: dict) -> str:
         # Store enriched articles for template population
         enriched = []
         for a in articles:
+            abstract = abstracts.get(a["pmid"], "")
+            a["_relevance_score"] = neurosurg_relevance_score(
+                a.get("title", ""),
+                abstract,
+            )
+            a["_evidence_grade"] = grade_evidence(a.get("pub_types", []))
+            a["_study_type"] = classify_study_type(a.get("pub_types", []))
+            a["_n_value"] = extract_n_value(abstract)
             entry = dict(a)
-            entry["_abstract"] = abstracts.get(a["pmid"], "")
+            entry["_abstract"] = abstract
             entry["_structured"] = structured.get(a["pmid"], {})
             enriched.append(entry)
         axis_data[label] = enriched
@@ -1317,6 +1354,7 @@ async def _handle_build_caseplan(args: dict) -> str:
                 a, i,
                 abstract=abstracts.get(a["pmid"]),
                 structured=structured.get(a["pmid"]),
+                evidence_grade=a.get("_evidence_grade"),
             ))
 
     # Fetch PMC full text for all papers
@@ -1725,102 +1763,7 @@ def _build_keywords(profile: str) -> dict[str, list[str]]:
     }
 
 
-# ── Profile-specific template sections ───────────────────────────────────
-# Each profile defines the headings + placeholder prompts sent to the LLM.
-# Templates mirror the taxonomy axes: anatomy ← Axis 2+3, approach ← Axis 4,
-# complications ← Axis 7.  Default template is used for profiles without
-# custom sections.
-
-_DEFAULT_TEMPLATES = {
-    "anatomy": [
-        ("Key Structures", "(list relevant structures)"),
-        ("Vascular Supply", "(arteries, veins)"),
-        ("Adjacent / At-Risk Structures", "(nerves, tracts, cisterns)"),
-        ("Anatomic Variants", "(common variants to be aware of)"),
-    ],
-    "approach": [
-        ("Approach Selection", "- **Approach:** (fill in)\n- **Rationale:** (fill in)"),
-        ("Positioning", "(supine, prone, lateral, sitting, etc.)"),
-        ("Key Steps", "1.\n2.\n3."),
-        ("Intraoperative Monitoring", "(SSEP, MEP, EMG, BAER)"),
-        ("Pitfalls", "(common errors and how to avoid them)"),
-    ],
-    "complications": [
-        ("Intraoperative", "(vascular injury, neurological deficit, etc.)"),
-        ("Postoperative", "(CSF leak, infection, hematoma, etc.)"),
-        ("Long-Term", "(recurrence, radiation effects, etc.)"),
-        ("Risk Mitigation", "(prevention strategies for each category)"),
-    ],
-}
-
-# Vascular profile templates — derived from neurointerventional evidence taxonomy
-# Axis 2 (Vascular Territory) + Axis 3 (Pathology) → anatomy headings
-# Axis 4 (Procedure / Technique) → approach headings
-# Axis 7 (Outcome Domain) → complications headings
-_VASCULAR_TEMPLATES = {
-    "anatomy": [
-        ("Lesion Location & Morphology",
-         "- **Location:** (segment, sidewall vs bifurcation, dome/neck dimensions)\n"
-         "- **Size:** (maximum diameter, neck width)\n"
-         "- **Morphology:** (saccular, fusiform, blister, dissecting)"),
-        ("Parent Vessel & Branch Anatomy",
-         "(parent artery, perforators, adjacent branches, dominance)"),
-        ("Vascular Territory",
-         "(anterior/posterior circulation, eloquent supply, watershed zones)"),
-        ("Classification / Grading",
-         "(Hunt-Hess, WFNS, modified Fisher for SAH; Spetzler-Martin, Lawton-Young for AVM; "
-         "Borden/Cognard for dAVF)"),
-        ("Associated Variants",
-         "(multiple aneurysms, fenestrations, anatomic variants, vasospasm)"),
-    ],
-    "approach": [
-        ("Treatment Strategy",
-         "- **Indication:** (why treat)\n"
-         "- **Options:** (clipping vs coiling vs flow diversion vs observation vs embolization)\n"
-         "- **Decision drivers:** (rupture status, morphology, patient factors)"),
-        ("Endovascular Technique",
-         "(primary coiling, balloon-assisted, stent-assisted, flow diversion, "
-         "intrasaccular disruption, liquid embolic, staged/multi-session)"),
-        ("Open Surgical Approach",
-         "(pterional, orbitozygomatic, interhemispheric, far-lateral, "
-         "subtemporal, supraorbital; temporary clipping, burst suppression, adenosine)"),
-        ("Access & Closure",
-         "(transfemoral, transradial, direct carotid; closure device, manual compression)"),
-        ("Adjunctive / Monitoring",
-         "(ICG angiography, microdoppler, balloon test occlusion, "
-         "provocative testing, intraoperative DSA)"),
-        ("Technical Pearls / Pitfalls",
-         "(clip selection, perforator preservation, brain relaxation, "
-         "premature rupture management)"),
-    ],
-    "complications": [
-        ("Hemorrhagic",
-         "(SAH, ICH, access site hematoma, retroperitoneal hematoma, rebleed, delayed rupture)"),
-        ("Ischemic",
-         "(territorial infarct, perforator infarct, distal emboli, vasospasm / DCI)"),
-        ("Device / Procedural",
-         "(thrombosis, migration, malapposition, coil herniation, "
-         "parent vessel compromise, dissection)"),
-        ("Access Site",
-         "(pseudoaneurysm, radial artery occlusion, groin hematoma, retroperitoneal)"),
-        ("Functional Outcomes",
-         "(mRS at discharge / 90 days, NIHSS, cognitive outcomes, "
-         "aneurysm occlusion class, recanalization / retreatment rate)"),
-        ("Durability",
-         "(rebleed rate, long-term occlusion, in-stent stenosis, "
-         "recurrence-free survival, retreatment-free survival)"),
-    ],
-}
-
-_PROFILE_TEMPLATES: dict[str, dict[str, list[tuple[str, str]]]] = {
-    "vascular": _VASCULAR_TEMPLATES,
-    # Other profiles use the default until they get custom templates
-}
-
-
-def _get_template_sections(profile: str) -> dict[str, list[tuple[str, str]]]:
-    """Return {anatomy, approach, complications} template sections for a profile."""
-    return _PROFILE_TEMPLATES.get(profile, _DEFAULT_TEMPLATES)
+# ── Profile detection ──────────────────────────────────────────────────
 
 def _detect_profile(topic: str) -> tuple[str, float]:
     """Detect the best domain profile for a topic string.
@@ -1862,228 +1805,7 @@ def _detect_profile(topic: str) -> tuple[str, float]:
     return ("skull_base", 0.0)
 
 
-def _extract_relevant_sentences(
-    articles: list[dict],
-    keywords: list[str],
-    max_per_article: int = 8,
-    char_budget: int = 32000,
-) -> list[str]:
-    """Scan article abstracts for sentences matching keywords.
-
-    Returns all sentences with ≥1 keyword hit, sorted by match density
-    (descending), accumulated until char_budget is exceeded. Each article
-    contributes at most max_per_article sentences.
-
-    This is a relevance-ordering pass, NOT a filter. The LLM prompt
-    already constrains to source facts — we just prioritize which
-    sentences it sees first. At abstract scale, everything fits.
-    """
-    import re
-
-    hits: list[tuple[int, str]] = []  # (score, sentence)
-    seen: set[str] = set()
-
-    for article in articles:
-        article_hits = 0
-        text = article.get("_abstract", "")
-        structured = article.get("_structured", {})
-        if structured:
-            text += " " + " ".join(structured.values())
-
-        sentences = re.split(r'(?<=[.!?])\s+(?=[A-Z])', text)
-
-        for sent in sentences:
-            if article_hits >= max_per_article:
-                break
-            sent_clean = sent.strip()
-            if len(sent_clean) < 30:
-                continue
-            norm = sent_clean.lower()[:60]
-            if norm in seen:
-                continue
-
-            score = 0
-            sent_lower = sent_clean.lower()
-            for kw in keywords:
-                if kw in sent_lower:
-                    score += 1
-
-            if score >= 1:
-                hits.append((score, sent_clean))
-                seen.add(norm)
-                article_hits += 1
-
-    # Sort by score descending (most keyword-dense first), then accumulate
-    hits.sort(key=lambda x: x[0], reverse=True)
-
-    result: list[str] = []
-    total_chars = 0
-    for score, sent in hits:
-        if total_chars + len(sent) > char_budget:
-            break
-        result.append(sent)
-        total_chars += len(sent)
-
-    return result
-
-
-async def _populate_section(
-    articles: list[dict],
-    keywords: list[str],
-    template_sections: list[tuple[str, str]],
-    topic: str,
-    section_title: str,
-    char_budget: int = 32000,
-    profile_name: str = "unknown",
-    keyword_count: int = 0,
-    split_complications: bool = False,
-) -> str:
-    """Run extract → synthesize → guardrail pipeline for one template section.
-
-    Args:
-        articles: Enriched article dicts with _abstract and _structured
-        keywords: Domain-profile keywords for relevance ordering
-        template_sections: [(section_name, placeholder_text), ...]
-        topic: Case topic string
-        section_title: Display title for the section
-        char_budget: Max characters of source text to send to LLM (default 32K ≈ 8K tokens)
-        profile_name: Name of the domain profile used (for diagnostics)
-        keyword_count: Number of active keywords (for diagnostics)
-        split_complications: If True, use synthesize_complications_split instead of
-                            single synthesize_section call
-
-    Returns:
-        Final markdown content to write to the file.
-    """
-    from caseprep.llm import synthesize_section, synthesize_complications_split, verify_synthesis
-
-    article_count = len(articles)
-
-    # Stage 1: Extract (relevance-ordered, not filtered — all sentences with ≥1 keyword hit)
-    extracted = _extract_relevant_sentences(articles, keywords, char_budget=char_budget)
-
-    if not extracted:
-        # Diagnostic: show what was attempted
-        profile_line = f"  Profile: **{profile_name}** ({keyword_count} keywords)"
-        count_line = f"  Articles searched: {article_count}"
-        lines = [f"# {section_title} — {topic}\n"]
-        lines.append(f"> *No sentences matching {section_title.lower()} keywords were found.*\n")
-        lines.append(f"> {profile_line}\n")
-        lines.append(f"> {count_line}\n")
-        lines.append(f"> *Consider broadening search terms or adding domain-specific source material.*\n")
-        lines.append("")
-        for name, placeholder in template_sections:
-            lines.append(f"## {name}\n")
-            lines.append(f"(Insufficient data in search results)\n")
-        return "\n".join(lines)
-
-    # Stage 2: Synthesize via LLM
-    try:
-        if split_complications:
-            synthesized = await synthesize_complications_split(
-                source_sentences=extracted,
-                topic=topic,
-                template_sections=template_sections,
-            )
-        else:
-            synthesized = await synthesize_section(
-                template_sections=template_sections,
-                source_sentences=extracted,
-                topic=topic,
-            )
-        if not synthesized:
-            raise ValueError("empty response from LLM")
-    except Exception:
-        # LLM failed — fall back to raw extracted sentences
-        lines = [f"# {section_title} — {topic}\n"]
-        lines.append("> *LLM synthesis unavailable — showing raw extracted findings.*\n")
-        lines.append(f"> *{len(extracted)} sentences extracted from {article_count} articles using {profile_name} profile ({keyword_count} keywords).*\n")
-        for name, placeholder in template_sections:
-            lines.append(f"## {name}\n")
-            lines.append(f"- (see source sentences below)\n")
-        lines.append("\n## Source Sentences from Literature\n")
-        for i, s in enumerate(extracted, 1):
-            lines.append(f"{i}. {s}\n")
-        return "\n".join(lines)
-
-    # Stage 3: Guardrail
-    result = verify_synthesis(synthesized, extracted)
-
-    # If guardrail rejects due to fabricated numbers, retry once with explicit warning
-    if not result.passed and result.total_count > 0:
-        fabricated = [c for c in result.claims if not c.get("numeric_fidelity", True)]
-        if fabricated:
-            print(f"  [guardrail] {len(fabricated)}/{result.total_count} claims had "
-                  f"fabricated numbers — retrying with stronger instruction",
-                  file=sys.stderr)
-            # Keep source numbering stable; pass retry guidance outside the source list.
-            reminder = (
-                "IMPORTANT REMINDER: Only use numbers that appear VERBATIM "
-                "in these source sentences. Do NOT compute, estimate, or "
-                "infer any statistics. If a number is not here, write "
-                "\"Insufficient data\" instead."
-            )
-            try:
-                if split_complications:
-                    synthesized = await synthesize_complications_split(
-                        source_sentences=extracted,
-                        topic=f"{topic}\n\n{reminder}",
-                        template_sections=template_sections,
-                    )
-                else:
-                    synthesized = await synthesize_section(
-                        template_sections=template_sections,
-                        source_sentences=extracted,
-                        topic=f"{topic}\n\n{reminder}",
-                    )
-                if synthesized:
-                    result = verify_synthesis(synthesized, extracted)
-            except Exception:
-                pass  # Retry failed; use first synthesis for diagnostics
-
-    # Handle 0/0 edge case explicitly
-    if result.total_count == 0:
-        lines = [f"# {section_title} — {topic}\n"]
-        lines.append("> *LLM synthesis produced no verifiable claims. Showing raw source sentences instead.*\n")
-        for name, placeholder in template_sections:
-            lines.append(f"## {name}\n")
-            lines.append(f"- (see source sentences below)\n")
-        lines.append("\n## Source Sentences from Literature\n")
-        for i, s in enumerate(extracted, 1):
-            lines.append(f"{i}. {s}\n")
-        return "\n".join(lines)
-
-    if result.passed:
-        lines = [f"# {section_title} — {topic}\n"]
-        # Add diagnostic header with guardrail info
-        diag_lines = []
-        if result.flagged_count == 0:
-            diag_lines.append(f"All {result.total_count} claims verified against cited sources")
-        else:
-            diag_lines.append(f"{result.flagged_count}/{result.total_count} claims flagged during verification")
-        diag_lines.append(f"{len(extracted)} source sentences from {article_count} articles ({profile_name} profile)")
-        lines.append(f"> *{' | '.join(diag_lines)}.*\n")
-        lines.append("")
-        lines.append(synthesized)
-        return "\n".join(lines)
-    else:
-        # Too many unsupported claims — fall back to raw sentences
-        lines = [f"# {section_title} — {topic}\n"]
-        lines.append(f"> *LLM synthesis rejected: {result.flagged_count}/{result.total_count} claims could not be verified against their cited sources.*\n")
-        # Show which claims failed and why
-        lines.append("> \n")
-        for i, claim_info in enumerate(result.claims):
-            if not claim_info["passed"] and claim_info.get("failure"):
-                lines.append(f"> - Claim {i+1}: {claim_info['failure']}\n")
-        lines.append("> \n")
-        lines.append(f"> *({len(extracted)} sentences extracted from {article_count} articles using {profile_name} profile). Showing raw source sentences below.*\n")
-        for name, placeholder in template_sections:
-            lines.append(f"## {name}\n")
-            lines.append(f"- (see source sentences below)\n")
-        lines.append("\n## Source Sentences from Literature\n")
-        for i, s in enumerate(extracted, 1):
-            lines.append(f"{i}. {s}\n")
-        return "\n".join(lines)
+# ── Open-i radiology image search ────────────────────────────────────────────
 
 
 async def _write_filled_templates(
@@ -2105,73 +1827,10 @@ async def _write_filled_templates(
     for filename, content in rendered_files.items():
         (out_dir / filename).write_text(content, encoding="utf-8")
 
-    # If no axis_data (backwards compat), the schema renderer already wrote
-    # blank canonical and legacy templates.
-    if not axis_data:
-        return
-
-    kw = _build_keywords(profile_name)
-
-    # Extract and populate each section via extract→synthesize→guardrail pipeline
-    # Use profile-specific keywords with per-section sources
-    anatomy_articles = axis_data.get("Anatomy / Relevant Structures", [])
-    technique_articles = axis_data.get("Surgical Technique", [])
-    reviews_articles = axis_data.get("Reviews / Landmarks", [])
-    outcomes_articles = axis_data.get("Outcomes / Evidence", [])
-    complications_articles = axis_data.get("Complications", [])
-
-    # Log profile detection
-    conf_str = f"{profile_confidence:.0%}" if profile_confidence > 0 else "fallback"
-    print(f"  [profile] Detected: {profile_name} (confidence: {conf_str})")
-
-    # Get profile-specific template sections (from taxonomy for vascular, default for others)
-    templates = _get_template_sections(profile_name)
-
-    # ── anatomy.md ─────────────────────────────────────────────────────
-    # Use anatomy-dedicated articles first, then reviews and technique as fallback.
-    # Anatomy papers discuss structures directly; technique/reviews rarely do.
-    anatomy_text = await _populate_section(
-        articles=anatomy_articles + reviews_articles + technique_articles,
-        keywords=kw["anatomy"],
-        template_sections=templates["anatomy"],
-        topic=topic,
-        section_title="Relevant Anatomy",
-        profile_name=profile_name,
-        keyword_count=len(kw["anatomy"]),
-    )
-
-    # ── approach.md ────────────────────────────────────────────────────
-    approach_text = await _populate_section(
-        articles=technique_articles,
-        keywords=kw["approach"],
-        template_sections=templates["approach"],
-        topic=topic,
-        section_title="Surgical Approach",
-        profile_name=profile_name,
-        keyword_count=len(kw["approach"]),
-    )
-
-    # ── complications.md ───────────────────────────────────────────────
-    complications_text = await _populate_section(
-        articles=complications_articles + outcomes_articles,
-        keywords=kw["complications"],
-        template_sections=templates["complications"],
-        topic=topic,
-        section_title="Potential Complications",
-        profile_name=profile_name,
-        keyword_count=len(kw["complications"]),
-        split_complications=True,  # use 2-call split to avoid token truncation
-    )
-
-    rendered_files = render_caseprep_files(
-        schema,
-        literature_summary=summary,
-        anatomy_body=anatomy_text,
-        operative_body=approach_text,
-        risk_body=complications_text,
-    )
-    for filename, content in rendered_files.items():
-        (out_dir / filename).write_text(content, encoding="utf-8")
+    # Schema + evidence-level metadata are already written above.
+    # LLM-based extract→synthesize→guardrail template population is removed
+    # because it produced unreliable content. The citation table with
+    # evidence_level fields is the canonical output.
 
 
 def _resource_html(topic: str, links: dict[str, str]) -> str:
