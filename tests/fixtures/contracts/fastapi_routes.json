@@ -1,0 +1,62 @@
+[
+  {
+    "path": "/api/build",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/caseplans",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/caseplans/{slug}",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/fulltext",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/generate",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/health",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/history",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/images/{path:path}",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/radiology",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/search",
+    "methods": [
+      "POST"
+    ]
+  }
+]

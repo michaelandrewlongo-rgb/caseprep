@@ -1,0 +1,12 @@
+usage: caseprep [-h] [--version] {generate,serve} ...
+
+Generate structured neurosurgical case prep materials.
+
+positional arguments:
+  {generate,serve}  Available commands
+    generate        Generate a case prep folder (default command)
+    serve           Launch the CasePrep web dashboard
+
+options:
+  -h, --help        show this help message and exit
+  --version         show program's version number and exit

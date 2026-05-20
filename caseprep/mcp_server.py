@@ -26,10 +26,12 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
+from caseprep.core import BuildCasePlanRequest, CasePlanBuilder
 from caseprep.generator import generate_caseprep as _generate_caseprep
 from caseprep.knowledge_graph import build_enriched_query
 from caseprep.links import build_search_links
 from caseprep.pdfs import format_pdf_results, search_local_pdfs as _search_local_pdfs
+from caseprep.profile_classifier import classify_profile as _classify_profile
 from caseprep.schema import (
     build_caseprep_schema,
     build_caseprep_schema_from_axis_data,
@@ -1280,6 +1282,12 @@ async def _handle_pubmed(args: dict) -> str:
 
 
 async def _handle_build_caseplan(args: dict) -> str:
+    request = BuildCasePlanRequest.from_mapping(args)
+    result = await CasePlanBuilder().build_case_plan(request)
+    return result.markdown
+
+
+async def _legacy_handle_build_caseplan(args: dict) -> str:
     topic = args["topic"]
     max_per = min(args.get("max_per_category", 5), 10)
     slug = topic.strip().lower().replace(" ", "-")
@@ -1289,7 +1297,10 @@ async def _handle_build_caseplan(args: dict) -> str:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Detect profile early to inform search queries
-    profile_name, profile_confidence = _detect_profile(topic)
+    profile_name, profile_confidence = _detect_profile(
+        topic,
+        profile_hint=args.get("profile_hint"),
+    )
     profile_kw = _build_keywords(profile_name)
 
     # Build anatomy search query with profile-specific terms
@@ -1369,7 +1380,13 @@ async def _handle_build_caseplan(args: dict) -> str:
     summary = "\n".join(lines)
 
     # ── Write filled-in templates to disk ───────────────────────────────
-    await _write_filled_templates(out_dir, topic, summary, axis_data)
+    await _write_filled_templates(
+        out_dir,
+        topic,
+        summary,
+        axis_data,
+        profile_hint=args.get("profile_hint"),
+    )
 
     links = build_search_links(topic)
     resource_path = out_dir / "resource-links.html"
@@ -1765,44 +1782,17 @@ def _build_keywords(profile: str) -> dict[str, list[str]]:
 
 # ── Profile detection ──────────────────────────────────────────────────
 
-def _detect_profile(topic: str) -> tuple[str, float]:
+def _detect_profile(
+    topic: str,
+    profile_hint: str | None = None,
+) -> tuple[str, float]:
     """Detect the best domain profile for a topic string.
 
     Returns (profile_name, confidence) where confidence is 0.0–1.0.
     Falls back to 'skull_base' with low confidence if no match.
     """
-    topic_lower = topic.lower()
-
-    # First pass: exact substring matches (higher confidence)
-    best_match = None
-    best_len = 0
-    for key, profile in _TOPIC_TO_PROFILE.items():
-        if key in topic_lower:
-            if len(key) > best_len:  # longest match wins
-                best_match = profile
-                best_len = len(key)
-
-    if best_match:
-        # Confidence = how much of the token space the matched key covers
-        confidence = min(1.0, best_len / max(len(topic_lower), 10))
-        return (best_match, confidence)
-
-    # Second pass: word-level matching (lower confidence)
-    topic_words = set(topic_lower.replace("-", " ").replace("/", " ").split())
-    word_hits: dict[str, int] = {}
-    for key, profile in _TOPIC_TO_PROFILE.items():
-        key_words = set(key.split())
-        overlap = topic_words & key_words
-        if overlap:
-            word_hits[profile] = word_hits.get(profile, 0) + len(overlap)
-
-    if word_hits:
-        best_profile = max(word_hits, key=lambda p: word_hits[p])  # type: ignore[arg-type]
-        confidence = min(0.5, word_hits[best_profile] / max(len(topic_words), 5))
-        return (best_profile, confidence)
-
-    # Fallback: skull_base (most general neurosurgical profile)
-    return ("skull_base", 0.0)
+    result = _classify_profile(topic, profile_hint=profile_hint)
+    return (result.profile, result.confidence)
 
 
 # ── Open-i radiology image search ────────────────────────────────────────────
@@ -1811,9 +1801,13 @@ def _detect_profile(topic: str) -> tuple[str, float]:
 async def _write_filled_templates(
     out_dir: Path, topic: str, summary: str,
     axis_data: dict[str, list[dict]] | None = None,
+    profile_hint: str | None = None,
 ) -> None:
     """Write filled-in markdown templates using keyword-extracted content from search results."""
-    profile_name, profile_confidence = _detect_profile(topic)
+    profile_name, profile_confidence = _detect_profile(
+        topic,
+        profile_hint=profile_hint,
+    )
     if axis_data:
         schema = build_caseprep_schema_from_axis_data(
             topic,

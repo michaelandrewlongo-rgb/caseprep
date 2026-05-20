@@ -1,0 +1,207 @@
+[
+  {
+    "name": "search_pubmed",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string"
+        },
+        "max_results": {
+          "type": "integer",
+          "default": 10
+        },
+        "filter_type": {
+          "type": "string",
+          "enum": [
+            "therapy",
+            "prognosis",
+            "etiology",
+            "diagnosis",
+            "systematic_review"
+          ]
+        },
+        "include_abstracts": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "required": [
+        "query"
+      ]
+    }
+  },
+  {
+    "name": "build_caseplan",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "topic": {
+          "type": "string"
+        },
+        "output_dir": {
+          "type": "string"
+        },
+        "max_per_category": {
+          "type": "integer",
+          "default": 3
+        }
+      },
+      "required": [
+        "topic"
+      ]
+    }
+  },
+  {
+    "name": "generate_caseprep",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "topic": {
+          "type": "string"
+        },
+        "output_dir": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "topic"
+      ]
+    }
+  },
+  {
+    "name": "get_fulltext",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "pmid": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "pmid"
+      ]
+    }
+  },
+  {
+    "name": "search_local_pdfs",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "topic": {
+          "type": "string"
+        },
+        "pdf_dir": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "topic",
+        "pdf_dir"
+      ]
+    }
+  },
+  {
+    "name": "search_radiology",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string"
+        },
+        "max_results": {
+          "type": "integer",
+          "default": 5
+        },
+        "modality": {
+          "type": "string",
+          "enum": [
+            "any",
+            "mri",
+            "ct",
+            "xray",
+            "ultrasound"
+          ]
+        },
+        "download_images": {
+          "type": "boolean",
+          "default": true
+        },
+        "output_dir": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "query"
+      ]
+    }
+  },
+  {
+    "name": "send_email",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "to": {
+          "type": "string"
+        },
+        "subject": {
+          "type": "string"
+        },
+        "body": {
+          "type": "string"
+        },
+        "from_": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "to",
+        "subject",
+        "body"
+      ]
+    }
+  },
+  {
+    "name": "list_subdomains",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "required": []
+    }
+  },
+  {
+    "name": "search_corpus",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "fts_query": {
+          "type": "string"
+        },
+        "subdomain": {
+          "type": "string"
+        },
+        "top_n": {
+          "type": "integer",
+          "default": 8
+        }
+      },
+      "required": [
+        "fts_query"
+      ]
+    }
+  },
+  {
+    "name": "get_paper",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "work_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "work_id"
+      ]
+    }
+  }
+]

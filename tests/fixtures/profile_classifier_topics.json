@@ -1,0 +1,26 @@
+[
+  {
+    "topic": "vestibular schwannoma",
+    "profile": "skull_base"
+  },
+  {
+    "topic": "anterior communicating artery aneurysm clipping",
+    "profile": "vascular"
+  },
+  {
+    "topic": "glioblastoma resection",
+    "profile": "supratentorial_tumor"
+  },
+  {
+    "topic": "lumbar fusion l4-l5",
+    "profile": "spine"
+  },
+  {
+    "topic": "deep brain stimulation parkinson",
+    "profile": "functional"
+  },
+  {
+    "topic": "pediatric hydrocephalus",
+    "profile": "pediatric"
+  }
+]
