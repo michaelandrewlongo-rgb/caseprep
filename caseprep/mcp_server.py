@@ -32,6 +32,7 @@ from caseprep.knowledge_graph import build_enriched_query
 from caseprep.links import build_search_links
 from caseprep.pdfs import format_pdf_results, search_local_pdfs as _search_local_pdfs
 from caseprep.profile_classifier import classify_profile as _classify_profile
+from caseprep.renderers.html import render_resource_links_html
 from caseprep.schema import (
     build_caseprep_schema,
     build_caseprep_schema_from_axis_data,
@@ -1828,24 +1829,7 @@ async def _write_filled_templates(
 
 
 def _resource_html(topic: str, links: dict[str, str]) -> str:
-    items = "\n".join(
-        f'  <li><a href="{url}" target="_blank" rel="noopener">{name}</a></li>'
-        for name, url in links.items()
-    )
-    return (
-        "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n"
-        "<meta charset=\"utf-8\">\n"
-        f"<title>Resource Links — {topic}</title>\n"
-        "<style>\n"
-        "  body { font-family: system-ui, sans-serif; max-width: 700px; margin: 2em auto; padding: 0 1em; }\n"
-        "  h1 { font-size: 1.4em; }\n"
-        "  ul { list-style: none; padding: 0; }\n"
-        "  li { margin: 0.5em 0; }\n"
-        "  a { color: #1a56db; }\n"
-        "</style>\n</head>\n<body>\n"
-        f"<h1>Resource Links — {topic}</h1>\n<ul>\n{items}\n</ul>\n"
-        "</body>\n</html>\n"
-    )
+    return render_resource_links_html(topic, links)
 
 
 def _handle_generate(args: dict) -> str:

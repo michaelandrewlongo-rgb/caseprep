@@ -4,6 +4,7 @@ import webbrowser
 from pathlib import Path
 
 from .links import build_search_links
+from .renderers.html import render_resource_links_html
 from .schema import build_caseprep_schema, render_caseprep_files
 
 # Template sections for each generated markdown file.
@@ -181,10 +182,7 @@ def generate_caseprep(
         (out / filename).write_text(content, encoding="utf-8")
 
     # resource-links.html
-    html_content = RESOURCE_HTML_TEMPLATE.format(
-        topic=topic,
-        link_items=_link_items_html(links),
-    )
+    html_content = render_resource_links_html(topic, links)
     resource_path = out / "resource-links.html"
     resource_path.write_text(html_content, encoding="utf-8")
 

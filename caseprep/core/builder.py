@@ -1,8 +1,8 @@
 """Initial transport-agnostic CasePrep core builder.
 
-This slice intentionally stops at classification plus normalized retrieval.
-Synthesis, provenance validation, pure rendering, and persistence land in later
-refactor slices.
+This slice keeps the core path transport-agnostic while incrementally adding
+classification, retrieval, synthesis, provenance validation, rendering, and
+persistence seams.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ from dataclasses import dataclass, replace
 from typing import Any, Protocol
 
 from caseprep.profile_classifier import build_keywords, classify_profile
+from caseprep.persistence import CasePrepRunStore, resolve_caseprep_store
 from caseprep.provenance import build_core_provenance, enforce_provenance
 from caseprep.retrievers.corpus import CorpusRetriever
 from caseprep.retrievers.pubmed import PubMedRetriever
@@ -126,6 +127,8 @@ async def build_core_case_plan(
     request: BuildCasePlanRequest,
     *,
     retrievers: CoreRetrieverSet | None = None,
+    store: CasePrepRunStore | None = None,
+    run_id: str | None = None,
 ) -> BuildCasePlanResult:
     """Build the first real core result for shadow-mode comparison."""
     provider_set = retrievers or default_core_retrievers()
@@ -254,7 +257,7 @@ async def build_core_case_plan(
         lines.extend(["", "## Warnings"])
         lines.extend(f"- {warning}" for warning in warnings)
 
-    return BuildCasePlanResult(
+    result = BuildCasePlanResult(
         topic=request.topic,
         markdown="\n".join(lines),
         output_dir=request.resolved_output_dir(),
@@ -264,3 +267,18 @@ async def build_core_case_plan(
         structured=structured,
         warnings=warnings,
     )
+
+    selected_store = store or resolve_caseprep_store(request)
+    if selected_store is not None:
+        try:
+            persisted = await _maybe_await(
+                selected_store.save_run(result, run_id=run_id)
+            )
+        except CasePrepError as exc:
+            warnings.append(f"Persistence: {exc}")
+        except Exception as exc:
+            warnings.append(f"Persistence: {exc}")
+        else:
+            structured["persistence"] = persisted.to_dict()
+
+    return result

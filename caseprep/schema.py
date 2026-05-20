@@ -660,7 +660,7 @@ def _render_open_questions(schema: dict[str, Any]) -> str:
 """
 
 
-def render_caseprep_files(
+def _legacy_render_caseprep_files(
     schema: dict[str, Any],
     *,
     literature_summary: str | None = None,
@@ -686,6 +686,58 @@ def render_caseprep_files(
     for legacy, canonical in LEGACY_MARKDOWN_ALIASES.items():
         files[legacy] = files[canonical]
     return files
+
+
+def render_caseprep_files(
+    schema: dict[str, Any],
+    *,
+    provenance: list[Any] | None = None,
+    literature_summary: str | None = None,
+    anatomy_body: str | None = None,
+    operative_body: str | None = None,
+    risk_body: str | None = None,
+) -> dict[str, str]:
+    """Render dossier files through the pure markdown renderer."""
+    from caseprep.core import CasePrepValidationError
+    from caseprep.renderers import (
+        compare_rendered_outputs,
+        resolve_compare_outputs_enabled,
+        resolve_dual_write_enabled,
+    )
+    from caseprep.renderers.markdown import render_caseprep_files as render_markdown
+
+    render_kwargs = {
+        "provenance": provenance,
+        "literature_summary": literature_summary,
+        "anatomy_body": anatomy_body,
+        "operative_body": operative_body,
+        "risk_body": risk_body,
+    }
+    rendered_files = render_markdown(schema, **render_kwargs)
+
+    if resolve_dual_write_enabled():
+        legacy_schema = dict(schema)
+        if provenance is not None:
+            legacy_schema["provenance"] = [
+                record.to_dict() if hasattr(record, "to_dict") else dict(record)
+                for record in provenance
+            ]
+        legacy_files = _legacy_render_caseprep_files(
+            legacy_schema,
+            literature_summary=literature_summary,
+            anatomy_body=anatomy_body,
+            operative_body=operative_body,
+            risk_body=risk_body,
+        )
+        if resolve_compare_outputs_enabled():
+            diffs = compare_rendered_outputs(legacy_files, rendered_files)
+            if diffs:
+                raise CasePrepValidationError(
+                    "Rendered output comparison failed",
+                    details={"diffs": diffs},
+                )
+
+    return rendered_files
 
 
 AXIS_RELEVANCE = {
