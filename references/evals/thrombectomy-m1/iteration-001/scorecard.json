@@ -1,0 +1,20 @@
+{
+  "case_id": "thrombectomy-m1",
+  "iteration": 1,
+  "output_path": "/tmp/caseprep-live-thrombectomy",
+  "overall_score": 13,
+  "pass_threshold": 75,
+  "passed": false,
+  "category_scores": {
+    "technique_workflow": 2,
+    "anatomy_dangerous_structures": 2,
+    "complications_rescue_plans": 2,
+    "alternatives_decision_boundaries": 1,
+    "evidence_quality_relevance": 3,
+    "case_specificity": 2,
+    "readability_usability": 2,
+    "provenance_citation_support": 1
+  },
+  "primary_failure": "Generic/open-surgery scaffolding and undigested literature excerpts; no clinically actionable thrombectomy briefing.",
+  "next_fix": "Add thrombectomy-specific dossier template/rendering path and remove generic open-surgery placeholders for endovascular cases."
+}

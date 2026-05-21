@@ -17,6 +17,7 @@ from caseprep.core import (
     EvidenceRecord,
     resolve_core_mode,
 )
+from caseprep.adapters.caseplan import build_caseplan_request
 
 
 def test_build_case_plan_request_normalizes_topic_and_legacy_args(tmp_path):
@@ -39,12 +40,101 @@ def test_build_case_plan_request_normalizes_topic_and_legacy_args(tmp_path):
     }
 
 
+def test_build_case_plan_request_accepts_case_input_without_topic(tmp_path):
+    output_dir = tmp_path / "caseprep"
+    request = BuildCasePlanRequest(
+        case_input="  83F R ICA terminus aneurysm for right pterional clipping  ",
+        output_dir=str(output_dir),
+        max_per_category=2,
+    )
+
+    assert request.topic is None
+    assert request.case_input == "83F R ICA terminus aneurysm for right pterional clipping"
+    assert request.output_dir == output_dir
+    assert request.resolved_case_input() == (
+        "83F R ICA terminus aneurysm for right pterional clipping"
+    )
+    assert request.to_legacy_args() == {
+        "topic": "83F R ICA terminus aneurysm for right pterional clipping",
+        "output_dir": str(output_dir),
+        "max_per_category": 2,
+    }
+
+
+def test_build_case_plan_request_topic_is_resolved_case_input_fallback():
+    request = BuildCasePlanRequest(topic="  vestibular schwannoma  ")
+
+    assert request.topic == "vestibular schwannoma"
+    assert request.case_input is None
+    assert request.resolved_case_input() == "vestibular schwannoma"
+
+
+def test_build_case_plan_request_case_input_takes_precedence_when_present():
+    request = BuildCasePlanRequest(
+        topic="vestibular schwannoma",
+        case_input="left retrosigmoid vestibular schwannoma resection",
+    )
+
+    assert request.resolved_case_input() == (
+        "left retrosigmoid vestibular schwannoma resection"
+    )
+    assert request.to_legacy_args()["topic"] == (
+        "left retrosigmoid vestibular schwannoma resection"
+    )
+
+
 def test_build_case_plan_request_rejects_blank_topic():
     with pytest.raises(CasePrepValidationError) as exc:
         BuildCasePlanRequest(topic=" ")
 
     assert exc.value.code == "validation_error"
     assert exc.value.details["field"] == "topic"
+
+
+def test_build_case_plan_request_rejects_blank_topic_and_case_input():
+    with pytest.raises(CasePrepValidationError) as exc:
+        BuildCasePlanRequest(topic=" ", case_input="\t")
+
+    assert exc.value.code == "validation_error"
+    assert exc.value.details["field"] == "topic"
+
+
+def test_build_case_plan_request_from_mapping_accepts_case_input():
+    request = BuildCasePlanRequest.from_mapping(
+        {"case_input": "  right pterional clipping  ", "max_per_category": 1}
+    )
+
+    assert request.topic is None
+    assert request.case_input == "right pterional clipping"
+    assert request.resolved_case_input() == "right pterional clipping"
+
+
+def test_build_case_plan_request_from_mapping_preserves_options():
+    request = BuildCasePlanRequest.from_mapping(
+        {
+            "topic": "aneurysm",
+            "options": {"include_images": False, "note": "urgent"},
+        }
+    )
+
+    assert request.options == {"include_images": False, "note": "urgent"}
+
+
+@pytest.mark.parametrize("invalid_value", [None, "3", 2.5, True, False])
+def test_build_case_plan_request_rejects_invalid_max_per_category_types(
+    invalid_value,
+):
+    with pytest.raises(CasePrepValidationError) as exc:
+        BuildCasePlanRequest(topic="aneurysm", max_per_category=invalid_value)
+
+    assert exc.value.details["field"] == "max_per_category"
+    assert "integer" in str(exc.value)
+
+
+def test_caseplan_adapter_defaults_max_per_category_to_core_default():
+    request = build_caseplan_request({"topic": "aneurysm"})
+
+    assert request.max_per_category == 3
 
 
 def test_domain_errors_expose_stable_payloads():
@@ -121,6 +211,40 @@ async def test_case_plan_builder_legacy_mode_delegates_to_legacy_builder(tmp_pat
     assert result.mode == "legacy"
     assert result.evidence == []
     assert result.provenance == []
+
+
+@pytest.mark.asyncio
+async def test_case_plan_builder_legacy_mode_uses_case_input_for_result_topic(tmp_path):
+    async def legacy_builder(request: BuildCasePlanRequest) -> str:
+        return "# Case Plan\n\nlegacy output"
+
+    request = BuildCasePlanRequest(
+        case_input="  83F R ICA terminus aneurysm clipping  ",
+        output_dir=tmp_path / "caseprep",
+    )
+    builder = CasePlanBuilder(mode="legacy", legacy_builder=legacy_builder)
+
+    result = await builder.build_case_plan(request)
+
+    assert result.topic == "83F R ICA terminus aneurysm clipping"
+    assert isinstance(result.topic, str)
+
+
+@pytest.mark.asyncio
+async def test_case_plan_builder_coerces_empty_result_topic_from_case_input(tmp_path):
+    async def legacy_builder(request: BuildCasePlanRequest) -> BuildCasePlanResult:
+        return BuildCasePlanResult(
+            topic="",
+            markdown="# Case Plan\n\nlegacy output",
+            output_dir=tmp_path / "caseprep",
+        )
+
+    request = BuildCasePlanRequest(case_input="right pterional clipping")
+    builder = CasePlanBuilder(mode="legacy", legacy_builder=legacy_builder)
+
+    result = await builder.build_case_plan(request)
+
+    assert result.topic == "right pterional clipping"
 
 
 @pytest.mark.asyncio

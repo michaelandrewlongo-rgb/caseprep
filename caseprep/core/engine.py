@@ -162,9 +162,10 @@ class CasePlanBuilder:
         mode: CoreMode,
     ) -> BuildCasePlanResult:
         if isinstance(raw_result, BuildCasePlanResult):
-            return replace(raw_result, mode=mode)
+            topic = raw_result.topic or request.resolved_case_input()
+            return replace(raw_result, topic=topic, mode=mode)
         return BuildCasePlanResult(
-            topic=request.topic,
+            topic=request.resolved_case_input(),
             markdown=raw_result,
             output_dir=request.resolved_output_dir(),
             mode=mode,

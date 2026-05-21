@@ -46,9 +46,10 @@ def build_caseplan_request(
         )
 
     return BuildCasePlanRequest(
-        topic=arguments["topic"],
+        topic=arguments.get("topic"),
+        case_input=arguments.get("case_input"),
         output_dir=arguments.get("output_dir") or None,
-        max_per_category=arguments.get("max_per_category", 5),
+        max_per_category=arguments.get("max_per_category", 3),
         profile_hint=arguments.get("profile_hint"),
         structured_output=arguments.get("structured_output", False),
         options=dict(options),

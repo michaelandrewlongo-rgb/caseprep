@@ -18,21 +18,33 @@ def _slugify_topic(topic: str) -> str:
 
 @dataclass(frozen=True)
 class BuildCasePlanRequest:
-    """Request to build a CasePrep plan for a topic."""
+    """Request to build a CasePrep plan for a topic or raw case input."""
 
-    topic: str
+    topic: str | None = None
+    case_input: str | None = None
     output_dir: Path | str | None = None
-    max_per_category: int = 5
+    max_per_category: int = 3
     profile_hint: str | None = None
     structured_output: bool = False
     options: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        topic = self.topic.strip()
-        if not topic:
+        topic = self.topic.strip() if self.topic is not None else None
+        case_input = self.case_input.strip() if self.case_input is not None else None
+        topic = topic or None
+        case_input = case_input or None
+        if topic is None and case_input is None:
             raise CasePrepValidationError(
-                "topic is required",
+                "topic or case_input is required",
                 details={"field": "topic"},
+            )
+        if not isinstance(self.max_per_category, int) or isinstance(
+            self.max_per_category,
+            bool,
+        ):
+            raise CasePrepValidationError(
+                "max_per_category must be an integer",
+                details={"field": "max_per_category"},
             )
         if self.max_per_category < 1:
             raise CasePrepValidationError(
@@ -40,6 +52,7 @@ class BuildCasePlanRequest:
                 details={"field": "max_per_category"},
             )
         object.__setattr__(self, "topic", topic)
+        object.__setattr__(self, "case_input", case_input)
         if self.output_dir is not None and not isinstance(self.output_dir, Path):
             object.__setattr__(self, "output_dir", Path(self.output_dir))
         if self.profile_hint is not None:
@@ -48,15 +61,21 @@ class BuildCasePlanRequest:
     @classmethod
     def from_mapping(cls, values: dict[str, Any]) -> "BuildCasePlanRequest":
         return cls(
-            topic=values["topic"],
+            topic=values.get("topic"),
+            case_input=values.get("case_input"),
             output_dir=values.get("output_dir") or None,
-            max_per_category=values.get("max_per_category", 5),
+            max_per_category=values.get("max_per_category", 3),
             profile_hint=values.get("profile_hint"),
             structured_output=values.get("structured_output", False),
+            options=dict(values.get("options") or {}),
         )
 
+    def resolved_case_input(self) -> str:
+        """Return the normalized case input, falling back to legacy topic."""
+        return self.case_input or self.topic or ""
+
     def default_output_dir(self) -> Path:
-        return Path.cwd() / f"{_slugify_topic(self.topic)}-caseprep"
+        return Path.cwd() / f"{_slugify_topic(self.resolved_case_input())}-caseprep"
 
     def resolved_output_dir(self) -> Path:
         if self.output_dir is None:
@@ -68,7 +87,7 @@ class BuildCasePlanRequest:
 
     def to_legacy_args(self) -> dict[str, Any]:
         args: dict[str, Any] = {
-            "topic": self.topic,
+            "topic": self.resolved_case_input(),
             "max_per_category": self.max_per_category,
         }
         if self.output_dir is not None:

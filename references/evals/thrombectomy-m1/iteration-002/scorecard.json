@@ -1,0 +1,29 @@
+{
+  "case_id": "thrombectomy-m1",
+  "iteration": 2,
+  "output_path": "/tmp/caseprep-live-thrombectomy-v2",
+  "overall_score": 52,
+  "pass_threshold": 75,
+  "passed": false,
+  "previous_score": 13,
+  "score_delta": 39,
+  "category_scores": {
+    "technique_workflow": 15,
+    "anatomy_dangerous_structures": 11,
+    "complications_rescue_plans": 10,
+    "alternatives_decision_boundaries": 4,
+    "evidence_quality_relevance": 2,
+    "case_specificity": 4,
+    "readability_usability": 3,
+    "provenance_citation_support": 3
+  },
+  "deterministic_eval_passed": true,
+  "primary_remaining_failures": [
+    "Imaging review is essentially absent",
+    "EVT eligibility and decision boundaries are underdeveloped",
+    "Evidence retrieval/ranking is off-target and misses landmark EVT trials/guidelines",
+    "Procedural detail remains generic rather than M1/device-specific",
+    "Post-reperfusion management lacks specific decision support"
+  ],
+  "next_fix": "Make thrombectomy imaging review and EVT eligibility/decision-boundary module mandatory and procedure-specific; improve evidence targeting toward landmark LVO/M1 thrombectomy trials and guidelines."
+}

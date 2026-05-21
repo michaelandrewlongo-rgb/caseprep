@@ -1,0 +1,30 @@
+{
+  "case_id": "thrombectomy-m1",
+  "iteration": 5,
+  "output_path": "/tmp/caseprep-live-thrombectomy-v5",
+  "overall_score": 72,
+  "pass_threshold": 75,
+  "passed": false,
+  "previous_score": 69,
+  "score_delta": 3,
+  "stop_reason": "completed_5_loops_without_reaching_75",
+  "category_scores": {
+    "technique_workflow": 21,
+    "anatomy_dangerous_structures": 15,
+    "complications_rescue_plans": 12,
+    "alternatives_decision_boundaries": 7,
+    "evidence_quality_relevance": 4,
+    "case_specificity": 7,
+    "readability_usability": 4,
+    "provenance_citation_support": 2
+  },
+  "deterministic_eval_passed": true,
+  "primary_remaining_failures": [
+    "Landmark evidence not actually cited/retrieved",
+    "No operational eligibility thresholds",
+    "Rescue stenting/ICAD/tandem plan too vague",
+    "Perforation/extravasation rescue lacks procedural specificity",
+    "Low-relevance evidence appendices still pollute clinical files"
+  ],
+  "next_fix": "Evidence retrieval/ranking and evidence hierarchy are now the bottleneck; force landmark EVT trials/guidelines and suppress low-relevance repeated excerpts."
+}

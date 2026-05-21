@@ -14,6 +14,7 @@ from caseprep.schema import (
     _render_checklists,
     _render_evidence,
     _render_imaging,
+    _render_morning_of_case,
     _render_open_questions,
     _render_operative_plan,
     _render_postop,
@@ -51,7 +52,7 @@ def render_caseprep_files(
     operative_body: str | None = None,
     risk_body: str | None = None,
 ) -> dict[str, str]:
-    """Render structured case data plus provenance into dossier files."""
+    """Render structured case data, parsed case summary, and provenance into dossier files."""
     schema = _with_provenance(case_object, provenance)
     files = {
         "caseprep.yaml": dump_yaml(schema) + "\n",
@@ -60,6 +61,7 @@ def render_caseprep_files(
             indent=2,
         ) + "\n",
         "README.md": _render_readme(schema),
+        "00-morning-of-case.md": _render_morning_of_case(schema),
         "01-case-summary.md": _render_case_summary(schema),
         "02-imaging-review.md": _render_imaging(schema),
         "03-anatomy-at-risk.md": _render_anatomy(schema, anatomy_body),

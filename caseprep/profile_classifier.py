@@ -11,6 +11,7 @@ ProfileName = Literal[
     "supratentorial_tumor",
     "vascular",
     "spine",
+    "posterior_fossa",
     "functional",
     "pediatric",
 ]
@@ -23,7 +24,7 @@ class ProfileClassification:
     profile: ProfileName
     confidence: float
     matched_term: str | None
-    source: Literal["hint", "substring", "word", "fallback"]
+    source: Literal["hint", "substring", "word", "fallback", "case_parser"]
 
 
 BASE_ANATOMY_KEYWORDS = [
@@ -140,6 +141,27 @@ DOMAIN_PROFILE_KEYWORDS: dict[ProfileName, dict[str, list[str]]] = {
             "adjacent segment", "instrumentation failure", "screw",
             "misplacement", "dysphagia", "hoarseness", "c5 palsy",
             "kyphosis", "sagittal", "flat back", "proximal junctional",
+        ],
+    },
+    "posterior_fossa": {
+        "anatomy": [
+            "posterior fossa", "foramen magnum", "craniocervical junction",
+            "cerebellar tonsils", "cerebell", "vermis", "brainstem",
+            "medulla", "fourth ventricle", "cisterna magna", "obex",
+            "c1", "atlas", "occipital bone", "pica", "vertebral artery",
+            "syrinx", "syringomyelia",
+        ],
+        "approach": [
+            "suboccipital craniectomy", "posterior fossa decompression",
+            "foramen magnum decompression", "c1 laminectomy", "duraplasty",
+            "tonsillar reduction", "arachnoid dissection", "prone positioning",
+            "mayfield", "intraoperative ultrasound",
+        ],
+        "complications": [
+            "pseudomeningocele", "csf leak", "cerebrospinal fluid leak",
+            "aseptic meningitis", "chemical meningitis", "hydrocephalus",
+            "vertebral artery injury", "pica injury", "brainstem injury",
+            "cerebellar slump", "wound infection", "reoperation",
         ],
     },
     "functional": {
@@ -260,6 +282,14 @@ TOPIC_TO_PROFILE: dict[str, ProfileName] = {
     "myelopathy": "spine",
     "radiculopathy": "spine",
     "cord": "spine",
+    "chiari malformation": "posterior_fossa",
+    "chiari i malformation": "posterior_fossa",
+    "chiari decompression": "posterior_fossa",
+    "posterior fossa decompression": "posterior_fossa",
+    "foramen magnum decompression": "posterior_fossa",
+    "suboccipital craniectomy": "posterior_fossa",
+    "syringomyelia": "posterior_fossa",
+    "syrinx": "posterior_fossa",
     "deep brain": "functional",
     "dbs": "functional",
     "parkinson": "functional",

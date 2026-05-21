@@ -1,0 +1,29 @@
+{
+  "case_id": "thrombectomy-m1",
+  "iteration": 3,
+  "output_path": "/tmp/caseprep-live-thrombectomy-v3",
+  "overall_score": 63,
+  "pass_threshold": 75,
+  "passed": false,
+  "previous_score": 52,
+  "score_delta": 11,
+  "category_scores": {
+    "technique_workflow": 17,
+    "anatomy_dangerous_structures": 13,
+    "complications_rescue_plans": 11,
+    "alternatives_decision_boundaries": 7,
+    "evidence_quality_relevance": 2,
+    "case_specificity": 5,
+    "readability_usability": 5,
+    "provenance_citation_support": 3
+  },
+  "deterministic_eval_passed": true,
+  "primary_remaining_failures": [
+    "Landmark evidence and guideline support for M1 LVO thrombectomy missing",
+    "Practical first-pass and escalation technique algorithm missing",
+    "Numeric peri-procedural management targets missing",
+    "Right M1 functional/anatomic preparation too generic",
+    "Rescue playbooks need operational sequence details"
+  ],
+  "next_fix": "Add landmark thrombectomy evidence bundle/relevance filtering plus more actionable right M1 technique and management defaults."
+}

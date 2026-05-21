@@ -7,6 +7,7 @@ import json
 import pytest
 
 from caseprep.core import CasePrepConfigurationError, ProvenanceRecord
+from caseprep.case_parser import parse_case_input, select_procedure_family
 from caseprep.links import build_search_links
 from caseprep.schema import build_caseprep_schema
 
@@ -48,6 +49,89 @@ def test_markdown_renderer_accepts_provenance_without_mutating_schema():
         }
     ]
     assert schema["provenance"] == original_provenance
+
+
+def test_markdown_renderer_includes_structured_case_summary():
+    from caseprep.renderers.markdown import render_caseprep_files
+
+    case_spec = parse_case_input(
+        "C5-6 anterior cervical discectomy and fusion for right C6 radiculopathy"
+    )
+    family = select_procedure_family(case_spec)
+    assert family is not None
+    schema = build_caseprep_schema(
+        case_spec.raw_input,
+        profile="spine",
+        structured_case=case_spec.to_dict(),
+        procedure_family={
+            "id": family.id,
+            "display_name": family.display_name,
+            "broad_profile": family.broad_profile,
+            "required_fields": list(family.required_fields),
+            "missing_fact_prompts": list(family.missing_fact_prompts),
+        },
+    )
+
+    rendered = render_caseprep_files(schema)["01-case-summary.md"]
+
+    assert "## Parsed Case Summary" in rendered
+    assert "Raw case input: C5-6 anterior cervical discectomy" in rendered
+    assert "Parsed procedure: anterior cervical discectomy and fusion" in rendered
+    assert "Procedure family: Anterior cervical discectomy and fusion (ACDF) (`spine_acdf`)" in rendered
+    assert "Broad profile: spine" in rendered
+    assert "Missing critical facts:" in rendered
+
+
+def test_markdown_renderer_thrombectomy_adds_morning_file_and_propagates_snapshot():
+    from caseprep.renderers.markdown import render_caseprep_files
+
+    case_spec = parse_case_input(
+        "mechanical thrombectomy for acute ischemic stroke due to right M1 MCA occlusion"
+    )
+    family = select_procedure_family(case_spec)
+    assert family is not None
+    schema = build_caseprep_schema(
+        case_spec.raw_input,
+        profile="vascular",
+        structured_case=case_spec.to_dict(),
+        procedure_family={
+            "id": family.id,
+            "display_name": family.display_name,
+            "broad_profile": family.broad_profile,
+            "required_fields": list(family.required_fields),
+            "missing_fact_prompts": list(family.missing_fact_prompts),
+        },
+    )
+
+    rendered = render_caseprep_files(schema)
+
+    assert "00-morning-of-case.md" in rendered
+    assert "00-morning-of-case.md" in rendered["README.md"]
+    assert "Planned procedure: mechanical thrombectomy" in rendered["01-case-summary.md"]
+    assert "Laterality: right" in rendered["01-case-summary.md"]
+    assert "right M1 MCA occlusion" in rendered["00-morning-of-case.md"]
+    assert "Structured Thrombectomy Decision Tables" in rendered["04-operative-plan.md"]
+    combined = "\n".join(rendered.values()).casefold()
+    assert "right right m1" not in combined
+
+
+def test_markdown_renderer_labels_degraded_missing_approach_as_generic():
+    from caseprep.renderers.markdown import render_caseprep_files
+
+    case_spec = parse_case_input("Chiari")
+    schema = build_caseprep_schema(
+        case_spec.raw_input,
+        profile="posterior_fossa",
+        structured_case=case_spec.to_dict(),
+        procedure_family=None,
+    )
+
+    rendered = render_caseprep_files(schema)["01-case-summary.md"]
+
+    assert "Degradation status: degraded/generic case summary" in rendered
+    assert "Parsed approach: generic/degraded — no booked approach identified" in rendered
+    assert "do not treat as a confirmed booked approach" in rendered
+    assert "Approach: suboccipital" not in rendered
 
 
 def test_html_renderer_matches_resource_links_template():

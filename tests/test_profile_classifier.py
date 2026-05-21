@@ -72,6 +72,16 @@ def test_build_keywords_merges_base_and_profile_without_mutating_base_lists():
     assert "mutated" not in BASE_ANATOMY_KEYWORDS
 
 
+def test_posterior_fossa_profile_has_chiari_keywords():
+    result = classify_profile("Chiari I malformation posterior fossa decompression")
+    keywords = build_keywords(result.profile)
+
+    assert result.profile == "posterior_fossa"
+    assert "foramen magnum" in keywords["anatomy"]
+    assert "suboccipital craniectomy" in keywords["approach"]
+    assert "pseudomeningocele" in keywords["complications"]
+
+
 def test_unknown_profile_uses_base_keyword_lists():
     keywords = build_keywords("unknown")
 

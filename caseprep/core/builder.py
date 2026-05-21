@@ -9,15 +9,16 @@ from __future__ import annotations
 
 import inspect
 import re
-from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from typing import Any, Protocol
 
-from caseprep.profile_classifier import build_keywords, classify_profile
+from caseprep.case_parser import CaseField, parse_case_input, select_procedure_family
+from caseprep.profile_classifier import classify_profile
 from caseprep.persistence import CasePrepRunStore, resolve_caseprep_store
 from caseprep.provenance import build_core_provenance, enforce_provenance
+from caseprep.retrieval_planning import build_case_queries
 from caseprep.schema import AXIS_RELEVANCE, build_caseprep_schema, render_caseprep_files
-from caseprep.scoring import grade_evidence
+from caseprep.scoring import grade_evidence, surgical_usefulness_score
 from caseprep.retrievers.corpus import CorpusRetriever
 from caseprep.retrievers.pubmed import PubMedRetriever
 from caseprep.retrievers.radiology import RadiologyRetriever
@@ -190,37 +191,36 @@ async def _maybe_await(value):
     return value
 
 
-def _build_enriched_query(topic: str, terms: Iterable[str]) -> str:
-    parts = [topic]
-    seen = {topic.lower()}
-    for term in terms:
-        normalized = term.strip()
-        if not normalized:
-            continue
-        key = normalized.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        parts.append(normalized)
-
-    query = " ".join(parts)
-    if len(query) > 200:
-        query = query[:200].rsplit(" ", 1)[0]
-    return query
-
-
 def _tag_evidence(
     records: list[EvidenceRecord],
     *,
     axis: str,
     query: str,
+    case_spec=None,
+    family=None,
+    procedure_family: str | None = None,
+    broad_profile: str | None = None,
+    sort_by_score: bool = False,
 ) -> list[EvidenceRecord]:
     tagged: list[EvidenceRecord] = []
     for record in records:
         metadata = dict(record.metadata)
         metadata["axis"] = axis
         metadata["query"] = query
+        if procedure_family is not None:
+            metadata["procedure_family"] = procedure_family
+        if broad_profile is not None:
+            metadata["broad_profile"] = broad_profile
+        if case_spec is not None:
+            score, reasons = surgical_usefulness_score(record, case_spec, family, axis)
+            metadata["surgical_usefulness_score"] = score
+            metadata["score_reasons"] = reasons
         tagged.append(replace(record, metadata=metadata))
+    if sort_by_score:
+        tagged.sort(
+            key=lambda record: int(record.metadata.get("surgical_usefulness_score", 0)),
+            reverse=True,
+        )
     return tagged
 
 
@@ -229,6 +229,50 @@ def _source_counts(records: list[EvidenceRecord]) -> dict[str, int]:
     for record in records:
         counts[record.source] = counts.get(record.source, 0) + 1
     return counts
+
+
+def _procedure_family_dict(case_spec) -> dict[str, Any] | None:
+    family = select_procedure_family(case_spec)
+    if family is None:
+        return None
+    return {
+        "id": family.id,
+        "display_name": family.display_name,
+        "broad_profile": family.broad_profile,
+        "required_fields": list(family.required_fields),
+        "missing_fact_prompts": list(family.missing_fact_prompts),
+    }
+
+
+def _should_apply_parser_profile(case_spec, classification) -> bool:
+    """Return whether parser-derived family/profile should drive classification.
+
+    Parser profiles are trusted for high-confidence procedure/approach-derived
+    families, or complete canonical cases. Degraded topic/pathology-only matches
+    (for example bare "Chiari" or "cervical radiculopathy") stay with the older
+    topic classifier. An explicit user profile_hint is represented by the
+    classifier as source="hint" and is never overridden here.
+    """
+    if classification.source == "hint":
+        return False
+    if not (case_spec.procedure_family.value and case_spec.broad_profile.value):
+        return False
+    return case_spec.procedure_family.confidence >= 0.8 or not case_spec.degraded
+
+
+def _should_apply_procedure_family_retrieval(case_spec, classification) -> bool:
+    """Return whether procedure-family retrieval templates are safe to use.
+
+    Retrieval trust is independent of profile classification ownership: an
+    explicit profile_hint should control structured["profile"], but it should
+    not suppress high-confidence/non-degraded procedure-family query templates.
+    Degraded topic/pathology-only matches still fall back to generic queries.
+    """
+    if not case_spec.procedure_family.value:
+        return False
+    if case_spec.procedure_family.confidence >= 0.8:
+        return True
+    return not case_spec.degraded
 
 
 def _evidence_year(record: EvidenceRecord) -> str:
@@ -280,20 +324,28 @@ def _core_literature_summary(markdown: str) -> str:
 def _write_core_artifacts(
     *,
     request: BuildCasePlanRequest,
+    topic: str,
     profile: str,
     evidence: list[EvidenceRecord],
     sections: list[SectionDraft],
     provenance: list[Any],
     markdown: str,
+    structured_case: dict[str, Any] | None = None,
+    procedure_family: dict[str, Any] | None = None,
 ) -> list[ArtifactRef]:
-    schema = build_caseprep_schema(request.topic, profile=profile)
+    schema = build_caseprep_schema(
+        topic,
+        profile=profile,
+        structured_case=structured_case,
+        procedure_family=procedure_family,
+    )
     schema["case"]["evidence"]["key_sources"] = [
         _key_source(record) for record in evidence if record.id
     ]
     schema["case"]["evidence"]["clinical_questions"] = [
-        f"What operative approach and setup best fit {request.topic}?",
-        f"What anatomy and imaging findings should change the plan for {request.topic}?",
-        f"What complications and rescue plans are most important for {request.topic}?",
+        f"What operative approach and setup best fit {topic}?",
+        f"What anatomy and imaging findings should change the plan for {topic}?",
+        f"What complications and rescue plans are most important for {topic}?",
     ]
     corpus_ids = {"corpus"}
     rendered_files = render_caseprep_files(
@@ -347,47 +399,74 @@ async def build_core_case_plan(
     run_id: str | None = None,
 ) -> BuildCasePlanResult:
     """Build the first real core result for shadow-mode comparison."""
+    topic = request.resolved_case_input()
+    case_spec = parse_case_input(topic)
+    procedure_family = select_procedure_family(case_spec)
     provider_set = retrievers or default_core_retrievers()
     classification = classify_profile(
-        request.topic,
+        topic,
         profile_hint=request.profile_hint,
     )
-    profile_keywords = build_keywords(classification.profile)
+    if _should_apply_parser_profile(case_spec, classification):
+        classification = replace(
+            classification,
+            profile=case_spec.broad_profile.value,
+            confidence=case_spec.broad_profile.confidence,
+            matched_term=case_spec.procedure_family.value,
+            source="case_parser",
+        )
     max_per = min(request.max_per_category, 10)
 
-    anatomy_query = _build_enriched_query(
-        request.topic,
-        profile_keywords["anatomy"][:5],
+    query_case_spec = case_spec
+    if procedure_family is None and not case_spec.broad_profile.value:
+        query_case_spec = replace(
+            case_spec,
+            broad_profile=CaseField(
+                classification.profile,
+                classification.confidence,
+                classification.source,
+                span=classification.matched_term,
+            ),
+        )
+    retrieval_family = (
+        procedure_family
+        if _should_apply_procedure_family_retrieval(case_spec, classification)
+        else None
     )
-    pubmed_axes: list[tuple[str, str, str | None]] = [
-        ("Anatomy / Relevant Structures", anatomy_query, None),
-        ("Outcomes / Evidence", f"{request.topic} outcomes", "therapy"),
-        (
-            "Surgical Technique",
-            f"{request.topic} surgical technique approach",
-            None,
-        ),
-        ("Complications", f"{request.topic} complications adverse", "etiology"),
-        ("Reviews / Landmarks", request.topic, "systematic_review"),
-    ]
+    pubmed_axes = build_case_queries(query_case_spec, retrieval_family)
 
     evidence: list[EvidenceRecord] = []
     warnings: list[str] = []
 
-    for label, query, filter_type in pubmed_axes:
+    for axis in pubmed_axes:
         try:
             records = await provider_set.pubmed.retrieve(
-                query,
+                axis.query,
                 max_results=max_per,
-                filter_type=filter_type,
+                filter_type=axis.filter_type,
                 include_abstracts=True,
             )
         except CasePrepError as exc:
-            warnings.append(f"{label}: {exc}")
+            warnings.append(f"{axis.label}: {exc}")
             continue
-        evidence.extend(_tag_evidence(records, axis=label, query=query))
+        evidence.extend(
+            _tag_evidence(
+                records,
+                axis=axis.label,
+                query=axis.query,
+                case_spec=query_case_spec,
+                family=retrieval_family,
+                procedure_family=retrieval_family.id if retrieval_family else None,
+                broad_profile=(
+                    retrieval_family.broad_profile
+                    if retrieval_family
+                    else query_case_spec.broad_profile.value
+                ),
+                sort_by_score=True,
+            )
+        )
 
-    radiology_query = f"{request.topic} radiology imaging"
+    radiology_query = f"{topic} radiology imaging"
     try:
         radiology_records = await provider_set.radiology.retrieve(
             radiology_query,
@@ -402,17 +481,25 @@ async def build_core_case_plan(
                 radiology_records,
                 axis="Radiology",
                 query=radiology_query,
+                case_spec=query_case_spec,
+                family=retrieval_family,
+                procedure_family=retrieval_family.id if retrieval_family else None,
+                broad_profile=(
+                    retrieval_family.broad_profile
+                    if retrieval_family
+                    else query_case_spec.broad_profile.value
+                ),
             )
         )
 
     corpus_subdomain = resolve_corpus_subdomain(
-        request.topic,
+        topic,
         classification.profile,
     )
     try:
         corpus_records = await _maybe_await(
             provider_set.corpus.retrieve(
-                request.topic,
+                topic,
                 subdomain=corpus_subdomain,
                 top_n=max_per,
             )
@@ -424,11 +511,21 @@ async def build_core_case_plan(
             _tag_evidence(
                 corpus_records,
                 axis="Corpus",
-                query=request.topic,
+                query=topic,
+                case_spec=query_case_spec,
+                family=retrieval_family,
+                procedure_family=retrieval_family.id if retrieval_family else None,
+                broad_profile=(
+                    retrieval_family.broad_profile
+                    if retrieval_family
+                    else query_case_spec.broad_profile.value
+                ),
             )
         )
 
     structured: dict[str, Any] = {
+        "case": case_spec.to_dict(),
+        "procedure_family": _procedure_family_dict(case_spec),
         "profile": {
             "name": classification.profile,
             "confidence": classification.confidence,
@@ -436,13 +533,22 @@ async def build_core_case_plan(
             "source": classification.source,
         },
         "retrieval": {
-            "pubmed_axes": [label for label, _, _ in pubmed_axes],
+            "pubmed_axes": [axis.label for axis in pubmed_axes],
+            "pubmed_queries": [
+                {
+                    "id": axis.id,
+                    "label": axis.label,
+                    "query": axis.query,
+                    "filter_type": axis.filter_type,
+                }
+                for axis in pubmed_axes
+            ],
             "corpus_subdomain": corpus_subdomain,
             "evidence_count": len(evidence),
             "sources": _source_counts(evidence),
         },
     }
-    sections = synthesize_sections(request.topic, evidence)
+    sections = synthesize_sections(topic, evidence)
     structured["sections"] = [section.to_dict() for section in sections]
     provenance = build_core_provenance(
         structured=structured,
@@ -459,7 +565,7 @@ async def build_core_case_plan(
     )
 
     lines = [
-        f"# Core Case Plan - {request.topic}",
+        f"# Core Case Plan - {topic}",
         "",
         "## Profile",
         f"- Profile: {classification.profile}",
@@ -484,11 +590,14 @@ async def build_core_case_plan(
         try:
             artifacts = _write_core_artifacts(
                 request=request,
+                topic=topic,
                 profile=classification.profile,
                 evidence=evidence,
                 sections=sections,
                 provenance=provenance,
                 markdown=markdown,
+                structured_case=structured["case"],
+                procedure_family=structured["procedure_family"],
             )
         except CasePrepError as exc:
             warnings.append(f"Artifact rendering: {exc}")
@@ -496,7 +605,7 @@ async def build_core_case_plan(
             warnings.append(f"Artifact rendering: {exc}")
 
     result = BuildCasePlanResult(
-        topic=request.topic,
+        topic=topic,
         markdown=markdown,
         output_dir=request.resolved_output_dir(),
         mode="core",

@@ -1,0 +1,30 @@
+{
+  "case_id": "thrombectomy-m1",
+  "iteration": 4,
+  "output_path": "/tmp/caseprep-live-thrombectomy-v4",
+  "overall_score": 69,
+  "pass_threshold": 75,
+  "passed": false,
+  "previous_score": 63,
+  "score_delta": 6,
+  "category_scores": {
+    "technique_workflow": 20,
+    "anatomy_dangerous_structures": 15,
+    "complications_rescue_plans": 12,
+    "alternatives_decision_boundaries": 7,
+    "evidence_quality_relevance": 3,
+    "case_specificity": 6,
+    "readability_usability": 4,
+    "provenance_citation_support": 2
+  },
+  "deterministic_eval_passed": true,
+  "primary_remaining_failures": [
+    "Proper landmark evidence support still lacks exact citations/retrieval",
+    "No real case-specific decision/eligibility table",
+    "M1 procedural anatomy needs more practical detail",
+    "Rescue algorithms need more operational steps",
+    "Post-thrombectomy management needs clearer conditional defaults",
+    "Known parsed facts still leak as needs input"
+  ],
+  "next_fix": "Propagate parsed known facts, add final one-page morning-of-case view and structured thrombectomy decision tables; fix polish issues such as right-right typo."
+}
