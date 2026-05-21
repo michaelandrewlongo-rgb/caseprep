@@ -451,6 +451,28 @@ def surgical_usefulness_score(
         score += 10
         reasons.append(f"+10 axis-appropriate publication type: {publication_match}")
 
+    source_tier = str(metadata.get("source_tier") or metadata.get("tier") or "").casefold()
+    evidence_role = str(metadata.get("evidence_role") or "").casefold()
+    if metadata.get("evidence_pack_id"):
+        score += 15
+        reasons.append("+15 procedure-specific evidence-pack source")
+    if any(term in source_tier for term in ("practice-changing", "meta-analysis", "pooled")):
+        score += 25
+        reasons.append(f"+25 landmark evidence tier: {metadata.get('source_tier') or metadata.get('tier')}")
+    elif "guideline" in source_tier or "consensus" in source_tier:
+        score += 20
+        reasons.append(f"+20 guideline/consensus evidence tier: {metadata.get('source_tier') or metadata.get('tier')}")
+    elif "late-window" in source_tier or "large-core" in source_tier:
+        score += 15
+        reasons.append(f"+15 conditional EVT evidence tier: {metadata.get('source_tier') or metadata.get('tier')}")
+    if any(term in evidence_role for term in ("early-window", "late-window", "guideline", "large-core", "pooled")):
+        score += 10
+        reasons.append(f"+10 EVT evidence role: {metadata.get('evidence_role')}")
+    if metadata.get("clinical_include") is False:
+        score -= 50
+        reason = metadata.get("quarantine_reason") or "lower-applicability source"
+        reasons.append(f"-50 quarantined from clinical synthesis: {reason}")
+
     family_context = tuple(procedure_terms + pathology_terms + location_terms)
     strict_family_context = _strict_context_terms(family_context)
     has_family_context = bool(_first_matching_term(full_text, strict_family_context))
@@ -470,6 +492,113 @@ def surgical_usefulness_score(
     if not reasons:
         reasons.append("0 no surgical-usefulness heuristics matched")
     return score, reasons
+
+
+def classify_clinical_applicability(
+    record: "EvidenceRecord",
+    case: "CaseSpec",
+    family: "ProcedureFamily | None",
+) -> tuple[bool, str]:
+    """Return whether a retrieved source should feed case-specific synthesis.
+
+    The evidence record remains preserved regardless of this classification; a
+    False result only means it belongs in a lower-applicability/quarantine
+    appendix rather than the operative bottom line.
+    """
+    text = f"{getattr(record, 'title', '') or ''} {getattr(record, 'text', '') or ''}"
+    text_cf = text.casefold()
+    case_text = _case_text(case)
+    family_id = getattr(family, "id", "") if family is not None else ""
+    is_thrombectomy = family_id == "endovascular_thrombectomy" or "thrombectomy" in case_text
+    explicit_m1_case = bool(re.search(r"\bm1\b", case_text))
+    explicit_m2_case = bool(re.search(r"\bm2\b", case_text))
+    posterior_case = any(term in case_text for term in ("basilar", "posterior circulation"))
+    primary_m1 = is_thrombectomy and explicit_m1_case and not explicit_m2_case and not posterior_case
+
+    m2_specific = (
+        bool(re.search(r"\bm2[-\s]?only\b", text_cf))
+        or bool(re.search(r"\bisolated\s+m2\b", text_cf))
+        or bool(re.search(r"\bm2\s+(?:segment\s+)?occlusions?\b", text_cf))
+        or bool(re.search(r"\bm2\s+segment\b", text_cf))
+        or "distal mca" in text_cf
+        or "distal middle cerebral" in text_cf
+    )
+    m1_context = bool(re.search(r"\bm1\b", text_cf)) and not bool(
+        re.search(r"\b(without|no|excluding|excluded|exclude)\s+m1\b", text_cf)
+    )
+    if primary_m1 and m2_specific and not m1_context:
+        return False, "M2-only/distal-MCA source for primary M1 case"
+
+    ai_terms = (
+        "artificial intelligence",
+        "deep learning",
+        "machine learning",
+        "ai workflow",
+        "workflow triage",
+        "detection software",
+        "automated detection",
+    )
+    if is_thrombectomy and any(term in text_cf for term in ai_terms):
+        return False, "AI/workflow-only source"
+
+    if primary_m1 and any(
+        term in text_cf
+        for term in ("basilar", "vertebrobasilar", "posterior circulation", "posterior-circulation")
+    ) and not any(term in text_cf for term in ("anterior circulation", "m1", "mca", "middle cerebral")):
+        return False, "posterior-circulation-only source for anterior M1 case"
+
+    if is_thrombectomy and any(
+        term in text_cf
+        for term in (
+            "case report",
+            "single case",
+            "vignette",
+            "rare anomaly",
+            "aortic arch anomaly",
+            "twig-like",
+            "historical vignette",
+            "historical review",
+            "history of thrombectomy",
+        )
+    ):
+        return False, "case report/rare anomaly or historical vignette source"
+
+    stroke_neuro_terms = (
+        "stroke",
+        "cerebral",
+        "brain",
+        "intracranial",
+        "neuro",
+        "mca",
+        "m1",
+        "thrombectomy",
+        "ischemic",
+        "ischaemic",
+    )
+    if _count_matches(text, NON_NEURO_TERMS) > 0 and not any(term in text_cf for term in stroke_neuro_terms):
+        return False, "non-stroke/non-neuro source"
+
+    return True, "clinically applicable"
+
+
+def _case_text(case: "CaseSpec") -> str:
+    parts: list[str] = []
+    for field_name in (
+        "raw_input",
+        "pathology",
+        "procedure",
+        "approach",
+        "anatomic_location",
+        "level_or_segment",
+    ):
+        field = getattr(case, field_name, None)
+        value = getattr(field, "value", field)
+        span = getattr(field, "span", None)
+        if value:
+            parts.append(str(value))
+        if span:
+            parts.append(str(span))
+    return " ".join(parts).casefold()
 
 
 def _normalize_pub_types(pub_types: list[str]) -> set[str]:

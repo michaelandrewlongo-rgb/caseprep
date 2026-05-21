@@ -1,0 +1,48 @@
+{
+  "case_id": "thrombectomy-m1",
+  "iteration": 6,
+  "output_path": "/tmp/caseprep-live-thrombectomy-v6",
+  "overall_score": 77,
+  "pass_threshold": 75,
+  "passed": true,
+  "previous_score": 72,
+  "score_delta": 5,
+  "stop_reason": "pass_threshold_met_no_blocking_p0_reported",
+  "category_scores": {
+    "technique_operative_workflow": 20,
+    "anatomy_dangerous_structures": 15,
+    "complications_rescue_plans": 12,
+    "alternatives_decision_boundaries": 8,
+    "evidence_quality_relevance": 8,
+    "case_specificity": 7,
+    "readability_usability": 4,
+    "provenance_citation_support": 3
+  },
+  "deterministic_eval": {
+    "passed": true,
+    "score": 100,
+    "missing_required_concepts": [],
+    "deterministic_failures": [],
+    "degradation_status": "not degraded"
+  },
+  "test_results": {
+    "full_suite": "284 passed in 1.20s",
+    "focused_suite": "61 passed in 0.31s"
+  },
+  "review_notes": "Two blind clinical reviewers returned 77/100 pass. The first review had category-score arithmetic inconsistency, so this scorecard uses the second arithmetic-consistent blind review.",
+  "primary_remaining_failures": [
+    "Critical patient-specific EVT eligibility facts remain absent: LKW, NIHSS, ASPECTS/core, collaterals, thrombolytic status, baseline mRS/goals of care.",
+    "Procedural workflow lacks concrete decision gates for anesthesia, BP by phase, first-pass default, maximum passes, and tandem/ICAD sequencing.",
+    "Right M1 anatomy section is useful but not deep enough on perforators, early branch incorporation, safe M2 landing zone, and carotid/cervical access hazards.",
+    "Complication rescue plans are broad rather than operational step-by-step algorithms.",
+    "Evidence is strong for EVT eligibility but weaker and less directly mapped for technical/anatomic/complication recommendations."
+  ],
+  "unsafe_or_misleading_content": [
+    "No major directly unsafe instruction identified.",
+    "Statement that no evidence-pack items are missing is too confident given limited technical and rescue evidence support.",
+    "Repeated MCA symmetry pilot source may be overemphasized relative to its practical value.",
+    "Alternatives and several case-specific fields remain generic placeholders."
+  ],
+  "resident_usefulness": "Helpful as a pre-case orientation and checklist, but not sufficient for an attending-independent procedural plan without patient-specific data and local protocol details.",
+  "next_fix": "Optional next slice: add a single-page EVT go/no-go decision algorithm plus right-M1 dangerous-anatomy and stepwise rescue algorithms, then map key recommendations to citations and de-emphasize repetitive lower-applicability appendices."
+}

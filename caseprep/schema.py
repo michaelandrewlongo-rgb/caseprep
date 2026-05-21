@@ -257,6 +257,8 @@ def build_caseprep_schema(
                 "bottom_line": "",
                 "confidence": "",
                 "key_sources": [],
+                "evidence_pack": None,
+                "quarantined_sources": [],
                 "outcome_metrics": [],
                 "complication_rates": [],
                 "applicability_to_this_case": "",
@@ -1437,6 +1439,77 @@ def _thrombectomy_source_applicability_notes(schema: dict[str, Any]) -> list[str
     return notes
 
 
+def _md_cell(value: Any) -> str:
+    return str(value or "").replace("|", "\\|").strip()
+
+
+def _source_ref(source: dict[str, Any]) -> str:
+    refs: list[str] = []
+    if source.get("pmid"):
+        refs.append(f"PMID {source.get('pmid')}")
+    if source.get("doi"):
+        refs.append(f"DOI {source.get('doi')}")
+    return "; ".join(refs) or str(source.get("id", ""))
+
+
+def _evidence_source_row(source: dict[str, Any]) -> str:
+    applicability = (
+        source.get("quarantine_reason")
+        if source.get("clinical_include") is False and source.get("quarantine_reason")
+        else source.get("applicability") or source.get("relevance") or source.get("quarantine_reason")
+    )
+    return "| {title} | {ref} | {tier} | {applicability} | {verification} |".format(
+        title=_md_cell(source.get("title") or source.get("pack_item_id") or source.get("id")),
+        ref=_md_cell(_source_ref(source)),
+        tier=_md_cell(source.get("source_tier") or source.get("tier") or source.get("evidence_level")),
+        applicability=_md_cell(applicability),
+        verification=_md_cell(source.get("verification") or "cited"),
+    )
+
+
+def _evidence_table(sources: list[dict[str, Any]], empty: str = "No retrieved sources in this category.") -> str:
+    if not sources:
+        return f"- {empty}"
+    rows = ["| Title | PMID/DOI | Tier | Applicability | Verification |", "|---|---|---|---|---|"]
+    rows.extend(_evidence_source_row(source) for source in sources)
+    return "\n".join(rows)
+
+
+def _source_category(source: dict[str, Any]) -> str:
+    tier = str(source.get("source_tier") or source.get("tier") or source.get("evidence_level") or "").casefold()
+    role = str(source.get("evidence_role") or source.get("relevance") or "").casefold()
+    title = str(source.get("title") or "").casefold()
+    text = " ".join((tier, role, title))
+    if source.get("clinical_include") is False:
+        return "quarantined"
+    if "guideline" in text or "consensus" in text:
+        return "guideline"
+    if "late-window" in text or "late window" in text or "dawn" in title or "defuse" in title:
+        return "late"
+    if "large-core" in text or "large core" in text or any(term in title for term in ("select2", "angel", "rescue-japan", "tension", "laste", "large ischemic", "large infarct")):
+        return "large_core"
+    if any(term in text for term in ("practice-changing", "pooled", "meta-analysis", "early-window", "landmark")):
+        return "practice"
+    if any(term in text for term in ("technique", "device", "stent", "aspiration", "balloon guide", "access")):
+        return "technique"
+    return "technique"
+
+
+def _coverage_items(evidence_pack: dict[str, Any] | None, *keys: str) -> list[dict[str, Any]]:
+    if not isinstance(evidence_pack, dict):
+        return []
+    items: list[dict[str, Any]] = []
+    for key in keys:
+        value = evidence_pack.get(key, [])
+        if isinstance(value, list):
+            for item in value:
+                if isinstance(item, dict):
+                    normalized = dict(item)
+                    normalized.setdefault("verification", key.rstrip("s") or key)
+                    items.append(normalized)
+    return items
+
+
 def _render_thrombectomy_evidence(schema: dict[str, Any], literature_summary: str | None = None) -> str:
     evidence = schema["case"]["evidence"]
     ctx = _thrombectomy_target_context(schema)
@@ -1447,26 +1520,32 @@ def _render_thrombectomy_evidence(schema: dict[str, Any], literature_summary: st
         if bool(ctx["is_mca"])
         else f"For a disabling treatable large-vessel occlusion such as {target_label}, EVT candidacy depends on confirmed occlusion territory, imaging/time-window criteria, and goals of care. Landmark anterior-circulation LVO trials remain targets to verify when the target is anterior circulation; posterior/unspecified targets require territory-specific evidence and guidelines"
     )
-    map_relevance_label = f"Relevance to {target_label} EVT"
     routine_focus = "routine M1 EVT conclusions" if bool(ctx["is_mca"]) else "routine EVT conclusions for this target"
     applicability_text = (
         f"{target_label.capitalize()} applicability depends on confirmed disabling deficit, ASPECTS/core-penumbra, time from last-known-well, premorbid status, thrombolytic status, tandem/ICAD anatomy, and hemorrhage risk; no patient-specific values should be inferred from the topic string."
     )
-    rows = []
-    for source in evidence.get("key_sources", []):
-        rows.append(
-            "| {id} | {title} | {year} | {evidence_level} | {relevance} | {status} |".format(
-                id=source.get("id", ""),
-                title=source.get("title", ""),
-                year=source.get("year", ""),
-                evidence_level=source.get("evidence_level", ""),
-                relevance=source.get("relevance", ""),
-                status=source.get("verification", "cited"),
-            )
-        )
-    table = "\n".join(rows) if rows else "| `needs input` | `needs input` |  |  |  |  |"
+    sources = [source for source in evidence.get("key_sources", []) if isinstance(source, dict)]
+    quarantined_sources = [source for source in sources if source.get("clinical_include") is False]
+    explicit_quarantined = evidence.get("quarantined_sources", [])
+    if isinstance(explicit_quarantined, list):
+        for source in explicit_quarantined:
+            if isinstance(source, dict) and not any(existing.get("id") == source.get("id") for existing in quarantined_sources):
+                quarantined_sources.append(source)
+    included_sources = [source for source in sources if source.get("clinical_include") is not False]
+    categories = {
+        "practice": [],
+        "guideline": [],
+        "late": [],
+        "large_core": [],
+        "technique": [],
+    }
+    for source in included_sources:
+        categories.setdefault(_source_category(source), categories["technique"]).append(source)
+    evidence_pack = evidence.get("evidence_pack") if isinstance(evidence.get("evidence_pack"), dict) else None
+    coverage_rows = _coverage_items(evidence_pack, "retrieved", "missing", "partial")
+    missing_rows = _coverage_items(evidence_pack, "missing", "partial")
     lower_applicability_notes = _thrombectomy_source_applicability_notes(schema)
-    lower_applicability_block = _list_block(lower_applicability_notes or [
+    guardrail_block = _list_block(lower_applicability_notes or [
         f"Screen retrieved sources for M2-only, AI-detection, rare-anomaly case-report, and historical-vignette focus; these should not dominate {routine_focus}."
     ])
     appendix = f"\n## Search Appendix\n\n{literature_summary.strip()}\n" if literature_summary else ""
@@ -1480,25 +1559,43 @@ def _render_thrombectomy_evidence(schema: dict[str, Any], literature_summary: st
 
 {mca_evidence_phrase}; late-window selection is supported by DAWN and DEFUSE 3 when mismatch/core criteria apply. Large-core trials support benefit in selected large-core patients but do not automatically apply without ASPECTS/core volume, time, premorbid status, hemorrhage risk, and local stroke-team judgment. Verify current AHA/ASA or ESO/ESMINT guideline recommendations and institutional protocol before applying numeric thresholds.
 
-## Landmark / Guideline Evidence Map
+## Landmark Evidence Coverage
 
-| Category | Landmark/guideline targets to verify | {map_relevance_label} |
-|---|---|---|
-| Early-window anterior-circulation LVO RCTs | MR CLEAN, ESCAPE, EXTEND-IA, SWIFT PRIME, REVASCAT | Core evidence base for EVT benefit in proximal anterior-circulation occlusion; verify exact inclusion criteria and citations before applying to this target. |
-| Pooled patient-level evidence | HERMES collaboration/meta-analysis | Synthesizes early EVT trials; useful for treatment-effect, subgroup, and workflow expectations; verify exact citation before final case packet. |
-| Late-window mismatch/core selection | DAWN and DEFUSE 3 | Supports EVT beyond conventional early window only for selected patients meeting clinical-core or perfusion-mismatch criteria; do not assume applicability without patient imaging/time data. |
-| Large-core EVT evidence | SELECT2, ANGEL-ASPECT, RESCUE-Japan LIMIT; TENSION/LASTE if available/appropriate | Supports selected large-core EVT consideration, but patient-specific ASPECTS/core volume, edema/hemorrhage risk, premorbid function, and local protocol are required before applying. |
-| Guidelines | AHA/ASA or ESO/ESMINT guideline category | Use to verify current eligibility, BP, thrombolytic, anesthesia, antithrombotic, and post-EVT management standards; local protocol governs implementation. |
+Landmark/guideline targets to verify: MR CLEAN, ESCAPE, EXTEND-IA, SWIFT PRIME, REVASCAT; HERMES collaboration/meta-analysis; DAWN; DEFUSE 3; SELECT2, ANGEL-ASPECT, RESCUE-Japan LIMIT, TENSION/LASTE; AHA/ASA or ESO/ESMINT guideline category.
 
-## Key Sources Retrieved In This Run
+{_evidence_table(coverage_rows, "No evidence pack coverage was attached to this run.")}
 
-| ID | Source | Year | Evidence Type | Relevance | Verification |
-|---|---|---:|---|---|---|
-{table}
+## Practice-Changing EVT Evidence
+
+{_evidence_table(categories["practice"])}
+
+## Guidelines / Consensus
+
+{_evidence_table(categories["guideline"])}
+
+## Late-Window Evidence
+
+{_evidence_table(categories["late"])}
+
+## Large-Core Conditional Evidence
+
+{_evidence_table(categories["large_core"])}
+
+## Technique and Device Evidence
+
+{_evidence_table(categories["technique"])}
+
+## Quarantined / Lower-Applicability Sources
+
+{_evidence_table(quarantined_sources, "No sources were quarantined in this run.")}
+
+## Missing or Partial Evidence
+
+{_evidence_table(missing_rows, "No missing evidence-pack items were recorded.")}
 
 ## Applicability Guardrails For Retrieved Sources
 
-{lower_applicability_block}
+{guardrail_block}
 
 ## Applicability To This Case
 

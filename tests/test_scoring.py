@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from caseprep.case_parser import parse_case_input, select_procedure_family
 from caseprep.core import EvidenceRecord
-from caseprep.scoring import neurosurg_relevance_score, surgical_usefulness_score
+from caseprep.scoring import (
+    classify_clinical_applicability,
+    neurosurg_relevance_score,
+    surgical_usefulness_score,
+)
 
 
 def _acdf_case():
@@ -108,6 +112,124 @@ def test_uterine_fibroid_embolization_is_penalized_for_thrombectomy_case():
     assert off_score < 20
     assert any("non-neurosurgical" in reason for reason in off_reasons)
     assert any("off-domain" in reason for reason in off_reasons)
+
+
+def test_classify_clinical_applicability_quarantines_known_low_applicability_sources():
+    case = parse_case_input("mechanical thrombectomy for acute ischemic stroke due to right M1 MCA occlusion")
+    family = select_procedure_family(case)
+
+    examples = [
+        (
+            EvidenceRecord(
+                id="m2",
+                source="pubmed",
+                title="M2-only thrombectomy outcomes after distal MCA occlusion",
+                text="distal M2-only cohort",
+            ),
+            "M2-only",
+        ),
+        (
+            EvidenceRecord(
+                id="isolated-m2",
+                source="pubmed",
+                title="Endovascular thrombectomy for isolated M2 segment occlusion",
+                text="isolated M2 occlusions treated with thrombectomy",
+            ),
+            "M2-only",
+        ),
+        (
+            EvidenceRecord(
+                id="m2-occlusions",
+                source="pubmed",
+                title="Thrombectomy for M2 occlusions: multicenter outcomes",
+                text="distal MCA M2 segment cohort without M1 patients",
+            ),
+            "M2-only",
+        ),
+        (
+            EvidenceRecord(
+                id="ai",
+                source="pubmed",
+                title="Artificial intelligence workflow triage for thrombectomy",
+                text="AI workflow and detection software only",
+            ),
+            "AI/workflow",
+        ),
+        (
+            EvidenceRecord(
+                id="basilar",
+                source="pubmed",
+                title="Basilar artery thrombectomy for posterior circulation stroke",
+                text="vertebrobasilar posterior circulation occlusion",
+            ),
+            "posterior-circulation-only",
+        ),
+        (
+            EvidenceRecord(
+                id="case-report",
+                source="pubmed",
+                title="Rare aortic arch anomaly during thrombectomy: case report",
+                text="single case report vignette",
+            ),
+            "case report",
+        ),
+        (
+            EvidenceRecord(
+                id="ufe",
+                source="pubmed",
+                title="Uterine fibroid embolization outcomes",
+                text="gynecologic embolization for fibroids",
+            ),
+            "non-stroke/non-neuro",
+        ),
+    ]
+
+    for record, expected_reason in examples:
+        include, reason = classify_clinical_applicability(record, case, family)
+        assert include is False
+        assert expected_reason in reason
+
+    include, reason = classify_clinical_applicability(
+        EvidenceRecord(
+            id="m1-rct",
+            source="pubmed",
+            title="Randomized trial of thrombectomy for anterior circulation large vessel occlusion",
+            text="M1 MCA acute ischemic stroke thrombectomy outcomes",
+        ),
+        case,
+        family,
+    )
+    assert include is True
+    assert reason == "clinically applicable"
+
+    include, reason = classify_clinical_applicability(
+        EvidenceRecord(
+            id="valid-history",
+            source="pubmed",
+            title="Thrombectomy outcomes in patients with a history of atrial fibrillation",
+            text="Patients with a history of atrial fibrillation were included in this acute ischemic stroke thrombectomy cohort.",
+        ),
+        case,
+        family,
+    )
+    assert include is True
+    assert reason == "clinically applicable"
+
+
+def test_classify_clinical_applicability_allows_m2_sources_for_m2_case():
+    case = parse_case_input("mechanical thrombectomy for acute ischemic stroke due to left M2 MCA occlusion")
+    family = select_procedure_family(case)
+    record = EvidenceRecord(
+        id="m2-valid",
+        source="pubmed",
+        title="Endovascular thrombectomy for isolated M2 segment occlusion",
+        text="isolated M2 occlusions treated with thrombectomy",
+    )
+
+    include, reason = classify_clinical_applicability(record, case, family)
+
+    assert include is True
+    assert reason == "clinically applicable"
 
 
 def test_breast_tumor_resection_review_is_penalized_for_convexity_meningioma():

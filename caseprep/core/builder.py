@@ -13,12 +13,21 @@ from dataclasses import dataclass, replace
 from typing import Any, Protocol
 
 from caseprep.case_parser import CaseField, parse_case_input, select_procedure_family
+from caseprep.evidence_packs.thrombectomy import (
+    EvidencePack,
+    EvidencePackItem,
+    get_thrombectomy_pack,
+)
 from caseprep.profile_classifier import classify_profile
 from caseprep.persistence import CasePrepRunStore, resolve_caseprep_store
 from caseprep.provenance import build_core_provenance, enforce_provenance
-from caseprep.retrieval_planning import build_case_queries
+from caseprep.retrieval_planning import build_case_queries, resolve_case_evidence_pack
 from caseprep.schema import AXIS_RELEVANCE, build_caseprep_schema, render_caseprep_files
-from caseprep.scoring import grade_evidence, surgical_usefulness_score
+from caseprep.scoring import (
+    classify_clinical_applicability,
+    grade_evidence,
+    surgical_usefulness_score,
+)
 from caseprep.retrievers.corpus import CorpusRetriever
 from caseprep.retrievers.pubmed import PubMedRetriever
 from caseprep.retrievers.radiology import RadiologyRetriever
@@ -211,8 +220,26 @@ def _tag_evidence(
             metadata["procedure_family"] = procedure_family
         if broad_profile is not None:
             metadata["broad_profile"] = broad_profile
+        provisional = replace(record, metadata=metadata)
         if case_spec is not None:
-            score, reasons = surgical_usefulness_score(record, case_spec, family, axis)
+            include, applicability_reason = classify_clinical_applicability(
+                provisional,
+                case_spec,
+                family,
+            )
+            metadata["clinical_include"] = include
+            metadata["applicability_classification"] = applicability_reason
+            if include:
+                metadata.pop("quarantine_reason", None)
+            else:
+                metadata["quarantine_reason"] = applicability_reason
+            provisional = replace(record, metadata=metadata)
+            score, reasons = surgical_usefulness_score(
+                provisional,
+                case_spec,
+                family,
+                axis,
+            )
             metadata["surgical_usefulness_score"] = score
             metadata["score_reasons"] = reasons
         tagged.append(replace(record, metadata=metadata))
@@ -229,6 +256,248 @@ def _source_counts(records: list[EvidenceRecord]) -> dict[str, int]:
     for record in records:
         counts[record.source] = counts.get(record.source, 0) + 1
     return counts
+
+
+def _normalized_identifier(value: Any) -> str:
+    return re.sub(r"\s+", "", str(value or "").strip().casefold())
+
+
+def _normalized_title(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", value.casefold()).strip()
+
+
+def _evidence_identity_keys(record: EvidenceRecord) -> list[str]:
+    metadata = record.metadata or {}
+    keys: list[str] = []
+    pmid = _normalized_identifier(metadata.get("pmid"))
+    if not pmid:
+        record_id = _normalized_identifier(record.id)
+        if record_id.startswith("pmid-"):
+            pmid = record_id.removeprefix("pmid-")
+    if pmid:
+        keys.append(f"pmid:{pmid}")
+    doi = _normalized_identifier(metadata.get("doi"))
+    if doi:
+        keys.append(f"doi:{doi}")
+    title = _normalized_title(record.title)
+    if title:
+        keys.append(f"title:{title}")
+    return keys
+
+
+def _prefer_record(new: EvidenceRecord, old: EvidenceRecord) -> bool:
+    new_pack = bool(new.metadata.get("evidence_pack_id"))
+    old_pack = bool(old.metadata.get("evidence_pack_id"))
+    if new_pack != old_pack:
+        return new_pack
+    new_score = int(new.metadata.get("surgical_usefulness_score", 0) or 0)
+    old_score = int(old.metadata.get("surgical_usefulness_score", 0) or 0)
+    if new_score != old_score:
+        return new_score > old_score
+    new_has_text = bool(new.text.strip())
+    old_has_text = bool(old.text.strip())
+    if new_has_text != old_has_text:
+        return new_has_text
+    return False
+
+
+def dedupe_evidence(records: list[EvidenceRecord]) -> list[EvidenceRecord]:
+    """Deduplicate records by PMID, DOI, or normalized title, preferring pack hits."""
+    deduped: list[EvidenceRecord] = []
+    key_to_index: dict[str, int] = {}
+    for record in records:
+        keys = _evidence_identity_keys(record)
+        existing_index = next((key_to_index[key] for key in keys if key in key_to_index), None)
+        if existing_index is None:
+            key_to_index.update({key: len(deduped) for key in keys})
+            deduped.append(record)
+            continue
+        if _prefer_record(record, deduped[existing_index]):
+            deduped[existing_index] = record
+        for key in keys:
+            key_to_index[key] = existing_index
+    return deduped
+
+
+def _pack_item_queries(item: EvidencePackItem) -> list[str]:
+    queries: list[str] = []
+    if item.pmid:
+        queries.append(f"{item.pmid}[PMID]")
+    if item.doi:
+        queries.append(f"{item.doi}[doi]")
+    if item.query_fallback:
+        queries.append(item.query_fallback)
+    unique: list[str] = []
+    seen: set[str] = set()
+    for query in queries:
+        key = query.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(query)
+    return unique
+
+
+def _pack_item_match_verification(record: EvidenceRecord, item: EvidencePackItem) -> str | None:
+    metadata = record.metadata or {}
+    record_id = _normalized_identifier(record.id)
+    if item.pmid and (
+        _normalized_identifier(metadata.get("pmid")) == item.pmid.casefold()
+        or record_id == f"pmid-{item.pmid.casefold()}"
+    ):
+        return "retrieved"
+    if item.doi and _normalized_identifier(metadata.get("doi")) == _normalized_identifier(item.doi):
+        return "retrieved"
+    title = _normalized_title(record.title)
+    hint = _normalized_title(item.title_hint)
+    if not title or not hint:
+        return None
+    if hint in title or title in hint:
+        return "partial"
+    hint_tokens = {token for token in hint.split() if len(token) >= 4}
+    title_tokens = {token for token in title.split() if len(token) >= 4}
+    if not hint_tokens:
+        return None
+    overlap = hint_tokens & title_tokens
+    if len(overlap) >= max(3, int(len(hint_tokens) * 0.6)):
+        return "partial"
+    return None
+
+
+def _record_matches_pack_item(record: EvidenceRecord, item: EvidencePackItem) -> bool:
+    return _pack_item_match_verification(record, item) is not None
+
+
+def _pack_item_payload(
+    item: EvidencePackItem,
+    *,
+    record: EvidenceRecord | None = None,
+    verification: str,
+    attempted_queries: list[str] | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "pack_item_id": item.id,
+        "title": record.title if record is not None and record.title else item.title_hint,
+        "pmid": (record.metadata.get("pmid") if record is not None else None) or item.pmid,
+        "doi": (record.metadata.get("doi") if record is not None else None) or item.doi,
+        "tier": item.tier,
+        "source_tier": item.tier,
+        "applicability": item.applicability_summary,
+        "required_for": list(item.required_for),
+        "conditional": item.conditional,
+        "verification": verification,
+    }
+    if record is not None:
+        payload["id"] = record.id
+    if attempted_queries:
+        payload["attempted_queries"] = attempted_queries
+    return payload
+
+
+async def _retrieve_evidence_pack(
+    *,
+    pack: EvidencePack,
+    provider_set: CoreRetrieverSet,
+    case_spec,
+    family,
+    procedure_family: str | None,
+    broad_profile: str | None,
+    warnings: list[str],
+) -> tuple[list[EvidenceRecord], dict[str, Any]]:
+    """Force retrieval attempts for an evidence pack without fabricating records."""
+    evidence: list[EvidenceRecord] = []
+    coverage: dict[str, Any] = {
+        "id": pack.id,
+        "display_name": pack.display_name,
+        "applicability_summary": pack.applicability_summary,
+        "retrieved": [],
+        "missing": [],
+        "partial": [],
+    }
+    for item in pack.items:
+        attempted_queries = _pack_item_queries(item)
+        matched_record: EvidenceRecord | None = None
+        matched_verification: str | None = None
+        for query in attempted_queries:
+            try:
+                records = await provider_set.pubmed.retrieve(
+                    query,
+                    max_results=1,
+                    filter_type=None,
+                    include_abstracts=True,
+                )
+            except CasePrepError as exc:
+                warnings.append(f"Evidence pack {pack.id}/{item.id}: {exc}")
+                continue
+            for candidate in records:
+                match_verification = _pack_item_match_verification(candidate, item)
+                if match_verification is not None:
+                    matched_record = candidate
+                    matched_verification = match_verification
+                    break
+            if matched_record is not None:
+                break
+        if matched_record is None:
+            coverage["missing"].append(
+                _pack_item_payload(
+                    item,
+                    verification="missing",
+                    attempted_queries=attempted_queries,
+                )
+            )
+            continue
+        verification = matched_verification or "partial"
+        metadata = dict(matched_record.metadata)
+        if verification == "retrieved":
+            if item.pmid:
+                metadata.setdefault("pmid", item.pmid)
+            if item.doi:
+                metadata.setdefault("doi", item.doi)
+        else:
+            if item.pmid:
+                metadata.setdefault("target_pmid", item.pmid)
+            if item.doi:
+                metadata.setdefault("target_doi", item.doi)
+        metadata.update({
+            "evidence_pack_id": pack.id,
+            "pack_item_id": item.id,
+            "source_tier": item.tier,
+            "tier": item.tier,
+            "evidence_role": ", ".join(item.required_for),
+            "applicability": item.applicability_summary,
+            "required_for": list(item.required_for),
+            "conditional": item.conditional,
+            "verification": verification,
+        })
+        tagged = _tag_evidence(
+            [replace(matched_record, metadata=metadata)],
+            axis="Evidence Pack",
+            query="; ".join(attempted_queries),
+            case_spec=case_spec,
+            family=family,
+            procedure_family=procedure_family,
+            broad_profile=broad_profile,
+            sort_by_score=False,
+        )[0]
+        evidence.append(tagged)
+        coverage_bucket = "retrieved" if verification == "retrieved" else "partial"
+        coverage[coverage_bucket].append(
+            _pack_item_payload(
+                item,
+                record=tagged,
+                verification=verification,
+                attempted_queries=attempted_queries,
+            )
+        )
+    return evidence, coverage
+
+
+def _quarantined_sources(records: list[EvidenceRecord]) -> list[dict[str, Any]]:
+    return [
+        _key_source(record)
+        for record in records
+        if record.metadata.get("clinical_include") is False
+    ]
 
 
 def _procedure_family_dict(case_spec) -> dict[str, Any] | None:
@@ -293,16 +562,37 @@ def _evidence_level(record: EvidenceRecord) -> str:
     return ""
 
 
-def _key_source(record: EvidenceRecord) -> dict[str, str]:
+def _key_source(record: EvidenceRecord) -> dict[str, Any]:
     axis = str(record.metadata.get("axis") or "").strip()
-    return {
+    metadata = record.metadata or {}
+    evidence_level = _evidence_level(record)
+    source_tier = str(metadata.get("source_tier") or metadata.get("tier") or evidence_level)
+    source = {
         "id": record.id,
         "title": record.title,
         "year": _evidence_year(record),
-        "evidence_level": _evidence_level(record),
+        "evidence_level": evidence_level,
+        "tier": source_tier,
+        "source_tier": source_tier,
         "relevance": AXIS_RELEVANCE.get(axis, axis.lower() or record.source),
-        "verification": "cited",
+        "verification": str(metadata.get("verification") or "cited"),
     }
+    for key in (
+        "pmid",
+        "doi",
+        "evidence_pack_id",
+        "pack_item_id",
+        "evidence_role",
+        "applicability",
+        "clinical_include",
+        "quarantine_reason",
+        "applicability_classification",
+    ):
+        if key in metadata:
+            source[key] = metadata[key]
+    if "score_reasons" in metadata:
+        source["score_reasons"] = metadata["score_reasons"]
+    return source
 
 
 def _section_body(
@@ -332,6 +622,8 @@ def _write_core_artifacts(
     markdown: str,
     structured_case: dict[str, Any] | None = None,
     procedure_family: dict[str, Any] | None = None,
+    evidence_pack: dict[str, Any] | None = None,
+    quarantined_sources: list[dict[str, Any]] | None = None,
 ) -> list[ArtifactRef]:
     schema = build_caseprep_schema(
         topic,
@@ -342,6 +634,10 @@ def _write_core_artifacts(
     schema["case"]["evidence"]["key_sources"] = [
         _key_source(record) for record in evidence if record.id
     ]
+    if evidence_pack is not None:
+        schema["case"]["evidence"]["evidence_pack"] = evidence_pack
+    if quarantined_sources is not None:
+        schema["case"]["evidence"]["quarantined_sources"] = quarantined_sources
     schema["case"]["evidence"]["clinical_questions"] = [
         f"What operative approach and setup best fit {topic}?",
         f"What anatomy and imaging findings should change the plan for {topic}?",
@@ -437,6 +733,25 @@ async def build_core_case_plan(
 
     evidence: list[EvidenceRecord] = []
     warnings: list[str] = []
+    evidence_pack_coverage: dict[str, Any] | None = None
+    evidence_pack_id = resolve_case_evidence_pack(query_case_spec, retrieval_family)
+    if evidence_pack_id:
+        evidence_pack = get_thrombectomy_pack(evidence_pack_id)
+        if evidence_pack is not None:
+            pack_records, evidence_pack_coverage = await _retrieve_evidence_pack(
+                pack=evidence_pack,
+                provider_set=provider_set,
+                case_spec=query_case_spec,
+                family=retrieval_family,
+                procedure_family=retrieval_family.id if retrieval_family else None,
+                broad_profile=(
+                    retrieval_family.broad_profile
+                    if retrieval_family
+                    else query_case_spec.broad_profile.value
+                ),
+                warnings=warnings,
+            )
+            evidence.extend(pack_records)
 
     for axis in pubmed_axes:
         try:
@@ -523,6 +838,9 @@ async def build_core_case_plan(
             )
         )
 
+    evidence = dedupe_evidence(evidence)
+    quarantined_sources = _quarantined_sources(evidence)
+
     structured: dict[str, Any] = {
         "case": case_spec.to_dict(),
         "procedure_family": _procedure_family_dict(case_spec),
@@ -546,6 +864,8 @@ async def build_core_case_plan(
             "corpus_subdomain": corpus_subdomain,
             "evidence_count": len(evidence),
             "sources": _source_counts(evidence),
+            "evidence_pack": evidence_pack_coverage,
+            "quarantined_sources": quarantined_sources,
         },
     }
     sections = synthesize_sections(topic, evidence)
@@ -598,6 +918,8 @@ async def build_core_case_plan(
                 markdown=markdown,
                 structured_case=structured["case"],
                 procedure_family=structured["procedure_family"],
+                evidence_pack=evidence_pack_coverage,
+                quarantined_sources=quarantined_sources,
             )
         except CasePrepError as exc:
             warnings.append(f"Artifact rendering: {exc}")

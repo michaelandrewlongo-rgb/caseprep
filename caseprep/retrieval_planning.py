@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 from caseprep.case_parser import CaseSpec
+from caseprep.evidence_packs.thrombectomy import resolve_thrombectomy_pack
 from caseprep.procedure_taxonomy import ProcedureFamily
 from caseprep.profile_classifier import build_keywords, classify_profile
 
@@ -16,6 +17,17 @@ class RetrievalAxis:
     label: str
     query: str
     filter_type: str | None = None
+
+
+def resolve_case_evidence_pack(
+    case: CaseSpec,
+    family: ProcedureFamily | None,
+) -> str | None:
+    """Return a deterministic evidence-pack ID for specific structured cases."""
+    if family is None or family.id != "endovascular_thrombectomy":
+        return None
+    pack = resolve_thrombectomy_pack(case)
+    return pack.id if pack is not None else None
 
 
 def build_case_queries(

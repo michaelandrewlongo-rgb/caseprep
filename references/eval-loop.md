@@ -68,3 +68,13 @@ A canonical case passes only when:
 Case: mechanical thrombectomy for acute ischemic stroke due to right M1 MCA occlusion.
 
 Iteration 001 failed at 13/100. The primary product failure was generic/open-surgery scaffold content being used for an endovascular thrombectomy case, with missing thrombectomy workflow, M1 anatomy, complication rescue trees, imaging eligibility, and post-reperfusion ICU plan.
+
+Iteration 002 improved to 52/100 after replacing generic open-surgery scaffold content with thrombectomy-specific dossier sections.
+
+Iteration 003 improved to 63/100 after adding thrombectomy imaging review and EVT eligibility framing.
+
+Iteration 004 improved to 69/100 after adding landmark EVT categories and actionable right M1 management defaults.
+
+Iteration 005 improved to 72/100 but did not meet the strict 75 threshold. Remaining bottleneck: landmark EVT evidence/guidelines were named but not reliably retrieved/cited, while lower-applicability sources cluttered the clinical files.
+
+Iteration 006 passed at 77/100 after evidence-pack forced retrieval, landmark/guideline coverage rendering, and quarantine/lower-applicability separation. Deterministic eval passed with score 100; full suite passed with 284 tests after adding the M2 applicability regression test. Remaining non-blocking bottlenecks: numeric EVT eligibility algorithm, deeper right-M1 technical/rescue checklists, and stronger citation-to-recommendation mapping.

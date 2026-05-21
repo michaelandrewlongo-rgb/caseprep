@@ -115,6 +115,102 @@ def test_markdown_renderer_thrombectomy_adds_morning_file_and_propagates_snapsho
     assert "right right m1" not in combined
 
 
+def test_thrombectomy_evidence_renderer_shows_pack_coverage_and_hierarchy():
+    from caseprep.renderers.markdown import render_caseprep_files
+
+    case_spec = parse_case_input(
+        "mechanical thrombectomy for acute ischemic stroke due to right M1 MCA occlusion"
+    )
+    family = select_procedure_family(case_spec)
+    assert family is not None
+    schema = build_caseprep_schema(
+        case_spec.raw_input,
+        profile="vascular",
+        structured_case=case_spec.to_dict(),
+        procedure_family={
+            "id": family.id,
+            "display_name": family.display_name,
+            "broad_profile": family.broad_profile,
+            "required_fields": list(family.required_fields),
+            "missing_fact_prompts": list(family.missing_fact_prompts),
+        },
+    )
+    schema["case"]["evidence"]["key_sources"] = [
+        {
+            "id": "pmid-25517348",
+            "title": "A Randomized Trial of Intraarterial Treatment for Acute Ischemic Stroke",
+            "pmid": "25517348",
+            "doi": "10.1056/NEJMoa1411587",
+            "tier": "practice-changing RCT",
+            "source_tier": "practice-changing RCT",
+            "evidence_role": "early-window EVT trial",
+            "applicability": "Directly applicable to anterior-circulation M1 LVO EVT.",
+            "verification": "retrieved",
+        },
+        {
+            "id": "pmid-41582814",
+            "title": "Current AHA/ASA guideline for acute ischemic stroke EVT",
+            "pmid": "41582814",
+            "doi": "10.1161/STR.0000000000000513",
+            "tier": "guideline/consensus",
+            "source_tier": "guideline/consensus",
+            "evidence_role": "guideline",
+            "applicability": "Use to verify current EVT eligibility and peri-procedural standards.",
+            "verification": "retrieved",
+        },
+        {
+            "id": "pmid-select2",
+            "title": "Trial of Endovascular Thrombectomy for Large Ischemic Strokes",
+            "pmid": "36762865",
+            "doi": "10.1056/NEJMoa2214403",
+            "tier": "large-core conditional RCT",
+            "source_tier": "large-core conditional RCT",
+            "evidence_role": "large-core conditional evidence",
+            "applicability": "Conditional: only if large-core selection criteria apply.",
+            "verification": "retrieved",
+        },
+        {
+            "id": "pmid-ai",
+            "title": "Artificial intelligence workflow triage for stroke thrombectomy",
+            "tier": "workflow study",
+            "evidence_role": "workflow-only",
+            "applicability": "Workflow only; not part of clinical EVT benefit hierarchy.",
+            "verification": "cited",
+            "clinical_include": False,
+            "quarantine_reason": "AI/workflow-only source",
+        },
+    ]
+    schema["case"]["evidence"]["evidence_pack"] = {
+        "id": "anterior_circulation_lvo_m1",
+        "retrieved": [{"pack_item_id": "mr_clean", "pmid": "25517348"}],
+        "missing": [{"pack_item_id": "escape", "pmid": "25671798", "doi": "10.1056/NEJMoa1414905"}],
+        "partial": [],
+    }
+
+    evidence_md = render_caseprep_files(schema)["07-evidence.md"]
+
+    for heading in [
+        "## Landmark Evidence Coverage",
+        "## Practice-Changing EVT Evidence",
+        "## Guidelines / Consensus",
+        "## Late-Window Evidence",
+        "## Large-Core Conditional Evidence",
+        "## Technique and Device Evidence",
+        "## Quarantined / Lower-Applicability Sources",
+        "## Missing or Partial Evidence",
+    ]:
+        assert heading in evidence_md
+    assert "25517348" in evidence_md
+    assert "10.1056/NEJMoa1411587" in evidence_md
+    assert "A Randomized Trial" in evidence_md
+    assert "Current AHA/ASA" in evidence_md
+    assert "SELECT2" in evidence_md or "Large Ischemic Strokes" in evidence_md
+    assert "Artificial intelligence workflow" in evidence_md
+    assert "AI/workflow-only source" in evidence_md
+    assert "escape" in evidence_md
+    assert "25671798" in evidence_md
+
+
 def test_markdown_renderer_labels_degraded_missing_approach_as_generic():
     from caseprep.renderers.markdown import render_caseprep_files
 

@@ -7,7 +7,7 @@ import pytest
 from caseprep.case_parser import parse_case_input, select_procedure_family
 from caseprep.core import BuildCasePlanRequest, EvidenceRecord
 from caseprep.core.builder import CoreRetrieverSet, build_core_case_plan
-from caseprep.retrieval_planning import build_case_queries
+from caseprep.retrieval_planning import build_case_queries, resolve_case_evidence_pack
 
 
 CANONICAL_CASES = {
@@ -95,6 +95,34 @@ def test_build_case_queries_falls_back_to_legacy_topic_axes_without_family():
     assert axes[3].filter_type == "etiology"
     assert axes[4].query == "generic operative planning topic"
     assert axes[4].filter_type == "systematic_review"
+
+
+def test_retrieval_planning_resolves_m1_pack_without_changing_axes():
+    case = parse_case_input(
+        "mechanical thrombectomy for acute ischemic stroke due to right M1 MCA occlusion"
+    )
+    family = select_procedure_family(case)
+
+    axes = build_case_queries(case, family)
+
+    assert resolve_case_evidence_pack(case, family) == "anterior_circulation_lvo_m1"
+    assert [axis.label for axis in axes] == [
+        "Anatomy / Relevant Structures",
+        "Outcomes / Evidence",
+        "Surgical Technique",
+        "Complications",
+        "Reviews / Landmarks",
+    ]
+
+
+def test_retrieval_planning_does_not_force_pack_for_bare_stroke_thrombectomy():
+    case = parse_case_input("stroke thrombectomy")
+    family = select_procedure_family(case)
+
+    assert family is not None
+    assert family.id == "endovascular_thrombectomy"
+    assert case.degraded is True
+    assert resolve_case_evidence_pack(case, family) is None
 
 
 @pytest.mark.asyncio

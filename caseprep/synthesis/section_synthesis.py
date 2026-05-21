@@ -59,6 +59,8 @@ def synthesize_sections(
     for record in evidence:
         if not record.id.strip():
             continue
+        if record.metadata.get("clinical_include") is False:
+            continue
         grouped.setdefault(_axis_for(record), []).append(record)
 
     sections: list[SectionDraft] = []

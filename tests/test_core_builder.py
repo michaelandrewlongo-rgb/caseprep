@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from caseprep.core import BuildCasePlanRequest, EvidenceRecord
-from caseprep.core.builder import CoreRetrieverSet, build_core_case_plan
+from caseprep.core.builder import CoreRetrieverSet, build_core_case_plan, dedupe_evidence
 
 
 @pytest.mark.asyncio
@@ -1071,3 +1071,271 @@ async def test_thrombectomy_unspecified_defaults_use_neutral_target_vessel_langu
     assert "occlusion location" in rendered
     assert "right m1" not in rendered
     assert "right anterior circulation" not in rendered
+
+
+class EvidencePackAwarePubMedRetriever:
+    def __init__(self, *, missing_pmids: set[str] | None = None, generic_records=None):
+        self.missing_pmids = missing_pmids or set()
+        self.generic_records = generic_records or []
+        self.calls: list[str] = []
+
+    async def retrieve(
+        self,
+        query,
+        *,
+        max_results=10,
+        filter_type=None,
+        include_abstracts=True,
+    ):
+        self.calls.append(query)
+        pack_records = {
+            "25517348": EvidenceRecord(
+                id="pmid-25517348",
+                source="pubmed",
+                title="A Randomized Trial of Intraarterial Treatment for Acute Ischemic Stroke",
+                text="MR CLEAN thrombectomy trial.",
+                metadata={"pmid": "25517348", "doi": "10.1056/NEJMoa1411587"},
+            ),
+            "25671798": EvidenceRecord(
+                id="pmid-25671798",
+                source="pubmed",
+                title="Randomized assessment of rapid endovascular treatment of ischemic stroke",
+                text="ESCAPE thrombectomy trial.",
+                metadata={"pmid": "25671798", "doi": "10.1056/NEJMoa1414905"},
+            ),
+        }
+        for pmid, record in pack_records.items():
+            if pmid in query:
+                return [] if pmid in self.missing_pmids else [record]
+        if "10.1056/NEJMoa1414905" in query or "ESCAPE" in query:
+            return []
+        if query.startswith("10.") or "[doi]" in query or "[PMID]" in query:
+            return []
+        return list(self.generic_records)
+
+
+@pytest.mark.asyncio
+async def test_core_builder_evidence_pack_retrieved_before_generic_records_and_tracks_missing():
+    generic = EvidenceRecord(
+        id="pmid-generic",
+        source="pubmed",
+        title="Generic mechanical thrombectomy technique review",
+        text="Technique overview for stroke thrombectomy.",
+        metadata={"pmid": "999"},
+    )
+    pubmed = EvidencePackAwarePubMedRetriever(
+        missing_pmids={"25671798"},
+        generic_records=[generic],
+    )
+
+    result = await build_core_case_plan(
+        BuildCasePlanRequest(
+            case_input="mechanical thrombectomy for acute ischemic stroke due to right M1 MCA occlusion",
+            max_per_category=1,
+        ),
+        retrievers=CoreRetrieverSet(
+            pubmed=pubmed,
+            radiology=EmptyCoreRadiologyRetriever(),
+            corpus=EmptyCoreCorpusRetriever(),
+        ),
+    )
+
+    assert result.evidence[0].id == "pmid-25517348"
+    assert result.evidence[0].metadata["evidence_pack_id"] == "anterior_circulation_lvo_m1"
+    assert result.evidence[0].metadata["pack_item_id"] == "mr_clean"
+    assert result.evidence[0].metadata["source_tier"] == "practice-changing RCT"
+    assert result.evidence[0].metadata["verification"] == "retrieved"
+    assert any(record.id == "pmid-generic" for record in result.evidence[1:])
+
+    coverage = result.structured["retrieval"]["evidence_pack"]
+    assert coverage["id"] == "anterior_circulation_lvo_m1"
+    assert any(item["pack_item_id"] == "mr_clean" for item in coverage["retrieved"])
+    assert any(item["pack_item_id"] == "escape" for item in coverage["missing"])
+    assert not any(
+        record.id == "pmid-25671798" or record.metadata.get("pack_item_id") == "escape"
+        for record in result.evidence
+    )
+
+
+@pytest.mark.asyncio
+async def test_core_builder_marks_fallback_title_pack_hits_as_partial_not_exactly_retrieved():
+    fallback_record = EvidenceRecord(
+        id="title-only-mr-clean",
+        source="pubmed",
+        title="A Randomized Trial of Intraarterial Treatment for Acute Ischemic Stroke",
+        text="Title-only MR CLEAN fallback result without PMID or DOI metadata.",
+    )
+
+    class FallbackOnlyPubMedRetriever:
+        async def retrieve(
+            self,
+            query,
+            *,
+            max_results=10,
+            filter_type=None,
+            include_abstracts=True,
+        ):
+            if query == "MR CLEAN randomized trial intraarterial treatment acute ischemic stroke thrombectomy":
+                return [fallback_record]
+            return []
+
+    result = await build_core_case_plan(
+        BuildCasePlanRequest(
+            case_input="mechanical thrombectomy for acute ischemic stroke due to right M1 MCA occlusion",
+            max_per_category=1,
+        ),
+        retrievers=CoreRetrieverSet(
+            pubmed=FallbackOnlyPubMedRetriever(),
+            radiology=EmptyCoreRadiologyRetriever(),
+            corpus=EmptyCoreCorpusRetriever(),
+        ),
+    )
+
+    coverage = result.structured["retrieval"]["evidence_pack"]
+    assert not any(item["pack_item_id"] == "mr_clean" for item in coverage["retrieved"])
+    assert any(item["pack_item_id"] == "mr_clean" for item in coverage["partial"])
+
+    tagged = next(record for record in result.evidence if record.id == "title-only-mr-clean")
+    assert tagged.metadata["pack_item_id"] == "mr_clean"
+    assert tagged.metadata["verification"] == "partial"
+
+
+def test_dedupe_evidence_prefers_pack_tagged_records_by_pmid_doi_and_title():
+    generic_by_pmid = EvidenceRecord(
+        id="generic-pmid",
+        source="pubmed",
+        title="MR CLEAN duplicate",
+        metadata={"pmid": "25517348"},
+    )
+    pack_by_pmid = EvidenceRecord(
+        id="pmid-25517348",
+        source="pubmed",
+        title="MR CLEAN duplicate",
+        metadata={"pmid": "25517348", "evidence_pack_id": "anterior_circulation_lvo_m1"},
+    )
+    by_doi = EvidenceRecord(
+        id="generic-doi",
+        source="pubmed",
+        title="DAWN duplicate",
+        metadata={"doi": "10.1056/NEJMoa1706442"},
+    )
+    pack_by_doi = EvidenceRecord(
+        id="pmid-29129157",
+        source="pubmed",
+        title="DAWN duplicate",
+        metadata={"doi": "10.1056/NEJMoa1706442", "evidence_pack_id": "anterior_circulation_lvo_m1"},
+    )
+    by_title = EvidenceRecord(id="title-1", source="pubmed", title="  Device Technique Review!  ")
+    title_dup = EvidenceRecord(id="title-2", source="corpus", title="Device technique review")
+
+    deduped = dedupe_evidence([
+        generic_by_pmid,
+        pack_by_pmid,
+        by_doi,
+        pack_by_doi,
+        by_title,
+        title_dup,
+    ])
+
+    assert [record.id for record in deduped] == [
+        "pmid-25517348",
+        "pmid-29129157",
+        "title-1",
+    ]
+
+
+def test_dedupe_evidence_learns_identity_keys_from_nonpreferred_duplicates():
+    pack_by_title = EvidenceRecord(
+        id="old-pack",
+        source="pubmed",
+        title="Shared thrombectomy source",
+        metadata={"evidence_pack_id": "anterior_circulation_lvo_m1"},
+    )
+    generic_same_title_with_doi = EvidenceRecord(
+        id="generic-title-doi",
+        source="pubmed",
+        title="Shared thrombectomy source",
+        metadata={"doi": "10.5555/shared"},
+    )
+    generic_same_doi_different_title = EvidenceRecord(
+        id="generic-doi",
+        source="pubmed",
+        title="Different title for same source",
+        metadata={"doi": "10.5555/shared"},
+    )
+
+    deduped = dedupe_evidence([
+        pack_by_title,
+        generic_same_title_with_doi,
+        generic_same_doi_different_title,
+    ])
+
+    assert [record.id for record in deduped] == ["old-pack"]
+
+
+@pytest.mark.asyncio
+async def test_core_builder_quarantines_low_applicability_records_and_filters_clinical_synthesis():
+    high_tier = EvidenceRecord(
+        id="pmid-25517348",
+        source="pubmed",
+        title="A Randomized Trial of Intraarterial Treatment for Acute Ischemic Stroke",
+        text="MR CLEAN thrombectomy trial.",
+        metadata={"pmid": "25517348", "doi": "10.1056/NEJMoa1411587"},
+    )
+    ai_workflow = EvidenceRecord(
+        id="pmid-ai",
+        source="pubmed",
+        title="Artificial intelligence workflow triage for stroke thrombectomy",
+        text="Workflow and detection software performance only.",
+    )
+    m2_only = EvidenceRecord(
+        id="pmid-m2",
+        source="pubmed",
+        title="M2-only thrombectomy outcomes after distal MCA occlusion",
+        text="Distal M2-only cohort.",
+    )
+
+    class MixedPubMedRetriever:
+        async def retrieve(
+            self,
+            query,
+            *,
+            max_results=10,
+            filter_type=None,
+            include_abstracts=True,
+        ):
+            if "25517348" in query:
+                return [high_tier]
+            if "[PMID]" in query or "[doi]" in query or query.startswith("10."):
+                return []
+            if "mechanical thrombectomy technique" in query:
+                return [ai_workflow, m2_only]
+            return []
+
+    result = await build_core_case_plan(
+        BuildCasePlanRequest(
+            case_input="mechanical thrombectomy for acute ischemic stroke due to right M1 MCA occlusion",
+            max_per_category=2,
+        ),
+        retrievers=CoreRetrieverSet(
+            pubmed=MixedPubMedRetriever(),
+            radiology=EmptyCoreRadiologyRetriever(),
+            corpus=EmptyCoreCorpusRetriever(),
+        ),
+    )
+
+    records = {record.id: record for record in result.evidence}
+    assert records["pmid-25517348"].metadata["clinical_include"] is True
+    assert records["pmid-ai"].metadata["clinical_include"] is False
+    assert "AI/workflow" in records["pmid-ai"].metadata["quarantine_reason"]
+    assert records["pmid-m2"].metadata["clinical_include"] is False
+    assert "M2-only" in records["pmid-m2"].metadata["quarantine_reason"]
+
+    section_text = "\n".join(section["body"] for section in result.structured["sections"])
+    assert "A Randomized Trial of Intraarterial Treatment" in section_text
+    assert "Artificial intelligence workflow" not in section_text
+    assert "M2-only thrombectomy" not in section_text
+    assert {item["id"] for item in result.structured["retrieval"]["quarantined_sources"]} == {
+        "pmid-ai",
+        "pmid-m2",
+    }

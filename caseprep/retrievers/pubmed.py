@@ -94,6 +94,7 @@ class PubMedRetriever:
             if not pmid:
                 continue
             metadata = {
+                "pmid": pmid,
                 "authors": article.get("authors", ""),
                 "journal": article.get("source", ""),
                 "pubdate": article.get("pubdate", ""),
