@@ -103,3 +103,33 @@ def test_retrieve_tiebreak_prefers_higher_usefulness():
     r = ImageBankRetriever(index=index)
     matches = r.retrieve("NCCT ASPECTS hemorrhage images.", top_k=2)
     assert [m.fig_id for m in matches] == ["PMC_high", "PMC_low"]
+
+
+def test_retrieve_admits_long_spec_with_two_token_overlap():
+    # Verbose spec (~15 content tokens); a 2-token overlap must still bind,
+    # where the old relative threshold (0.20) would have excluded it (2/15≈0.13).
+    index = [
+        {"fig_id": "PMC1_F1", "local_path": "/d.jpg", "pmcid": "PMC1", "pmid": "1",
+         "cluster": "stroke_thrombectomy", "modality": "DSA/angiogram",
+         "caption": "Final DSA TICI 3", "surgical_usefulness": 5,
+         "tokens": ["dsa", "mtici", "recanalization", "thrombectomy"]},
+    ]
+    r = ImageBankRetriever(index=index)
+    spec = ("Planned DSA working projections for access route, clot crossing, "
+            "distal landing zone, branch anatomy, and final mTICI assessment.")
+    matches = r.retrieve(spec, top_k=3)
+    assert matches and matches[0].fig_id == "PMC1_F1"
+    assert set(matches[0].matched_tokens) >= {"dsa", "mtici"}
+
+
+def test_retrieve_rejects_single_token_overlap_noise():
+    # 1-token overlap on a short spec (old score 1/4=0.25 passed 0.20) must now be rejected.
+    index = [
+        {"fig_id": "PMC_noise", "local_path": "/n.jpg", "pmcid": "PMCN", "pmid": "9",
+         "cluster": "carotid_cervical_vascular", "modality": "CT",
+         "caption": "Spine pedicle CT", "surgical_usefulness": 4,
+         "tokens": ["hemorrhage", "pedicle", "screw"]},
+    ]
+    r = ImageBankRetriever(index=index)
+    matches = r.retrieve("NCCT axial ASPECTS/hemorrhage-exclusion images.", top_k=3)
+    assert matches == []   # only "hemorrhage" overlaps (1 token) → below MIN_OVERLAP

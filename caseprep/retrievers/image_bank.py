@@ -34,7 +34,7 @@ SPEC_STOPWORDS = frozenset({
     "of", "in", "for", "with", "if", "to", "from", "on", "map", "maps",
 })
 
-MIN_SCORE = 0.20
+MIN_OVERLAP = 2  # require >=2 matched content tokens (length-robust gate)
 DEFAULT_TOP_K = 2
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
@@ -92,11 +92,11 @@ class ImageBankRetriever:
         *,
         index: list[dict] | None,
         clusters: frozenset[str] = THROMBECTOMY_CLUSTERS,
-        min_score: float = MIN_SCORE,
+        min_overlap: int = MIN_OVERLAP,
     ) -> None:
         self._index = index
         self._clusters = clusters
-        self._min_score = min_score
+        self._min_overlap = min_overlap
 
     def retrieve(self, spec: str, *, top_k: int = DEFAULT_TOP_K) -> list[ImageMatch]:
         if self._index is None or not self._index:
@@ -123,7 +123,7 @@ class ImageBankRetriever:
                 continue
             # score = fraction of the spec's content tokens found in this image (spec-coverage).
             score = len(overlap) / len(want_tokens)
-            if score < self._min_score:
+            if len(overlap) < self._min_overlap:
                 continue
             scored.append(ImageMatch(
                 fig_id=rec["fig_id"],
@@ -144,6 +144,6 @@ class ImageBankRetriever:
 
 __all__ = [
     "ImageMatch", "parse_modality_hint", "spec_tokens",
-    "THROMBECTOMY_CLUSTERS", "MIN_SCORE", "DEFAULT_TOP_K",
+    "THROMBECTOMY_CLUSTERS", "MIN_OVERLAP", "DEFAULT_TOP_K",
     "ImageBankRetriever",
 ]
