@@ -38,6 +38,9 @@ from caseprep.retrievers.corpus_semantic import SemanticCorpusRetriever
 from caseprep.retrievers.pubmed import PubMedRetriever
 from caseprep.retrievers.radiology import RadiologyRetriever
 from caseprep.synthesis.section_synthesis import SectionDraft, synthesize_sections
+from caseprep.image_bank.image_index import ImageIndex
+from caseprep.image_binding import bind_images_to_schema
+from caseprep.retrievers.image_bank import ImageBankRetriever
 
 from .contracts import (
     ArtifactRef,
@@ -45,6 +48,7 @@ from .contracts import (
     BuildCasePlanResult,
     EvidenceRecord,
     OutputIntentPlan,
+    ProvenanceRecord,
 )
 from caseprep.audit.card_auditor import audit_manifest
 from caseprep.compile.case_compiler import compile_board
@@ -710,6 +714,38 @@ def _core_literature_summary(markdown: str) -> str:
     return f"## Core Search Appendix\n\n{markdown}"
 
 
+def _bind_image_bank(
+    schema: dict[str, Any],
+    provenance: list[ProvenanceRecord],
+    *,
+    retriever: ImageBankRetriever | None,
+    warnings: list[str] | None,
+    index_path=None,
+) -> None:
+    """Attach curated image-bank figures to the schema's image specs.
+
+    Best-effort and isolated: any failure leaves the briefing unchanged.
+
+    NOTE ON ORDERING: this runs inside _write_core_artifacts, which executes
+    AFTER enforce_provenance has already validated the provenance list. Image
+    provenance records are therefore an append-only audit trail and are NOT
+    cross-checked against the literature evidence IDs — image-bank figures are
+    a separate corpus. Do not move provenance enforcement after this call.
+    """
+    try:
+        if retriever is None:
+            kwargs = {"index_path": index_path} if index_path is not None else {}
+            index = ImageIndex(**kwargs).load()
+            retriever = ImageBankRetriever(index=index)
+        records = bind_images_to_schema(schema, retriever)
+        provenance.extend(records)
+        if not records and warnings is not None:
+            warnings.append("Image bank: no images bound (index empty or no matches).")
+    except Exception as exc:  # never let image binding break a briefing
+        if warnings is not None:
+            warnings.append(f"Image bank binding failed: {exc}")
+
+
 def _write_core_artifacts(
     *,
     request: BuildCasePlanRequest,
@@ -818,6 +854,7 @@ def _write_core_artifacts(
         f"What anatomy and imaging findings should change the plan for {topic}?",
         f"What complications and rescue plans are most important for {topic}?",
     ]
+    _bind_image_bank(schema, provenance, retriever=None, warnings=warnings)
     corpus_ids = {"corpus"}
     rendered_files = render_caseprep_files(
         schema,
