@@ -7,8 +7,10 @@ a real figure (catches the 0-byte / 1x1 px artifacts found in the bank).
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -54,6 +56,8 @@ class ImageIndex:
         for (fig_id, cluster, pmcid, pmid, caption, local_path, modality,
              usefulness, anatomy, procedure, caption_summary, keywords) in rows:
             path = Path(local_path or "")
+            if not path.is_absolute():
+                path = self._db_path.parent / path
             if not path.is_file() or path.stat().st_size < MIN_FILE_BYTES:
                 continue
             token_text = " ".join(
@@ -71,7 +75,18 @@ class ImageIndex:
                 "tokens": sorted(_tokenize(token_text)),
             })
 
-        self._index_path.write_text(json.dumps(records), encoding="utf-8")
+        tmp_dir = self._index_path.parent
+        fd, tmp_name = tempfile.mkstemp(dir=tmp_dir, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(records, f)
+            os.replace(tmp_name, self._index_path)
+        except Exception:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+            raise
         return records
 
     def load(self) -> list[dict[str, Any]] | None:
@@ -81,5 +96,6 @@ class ImageIndex:
 
 
 if __name__ == "__main__":  # manual rebuild: python -m caseprep.image_bank.image_index
-    built = ImageIndex().build()
-    print(f"Indexed {len(built)} images → {ImageIndex()._index_path}")
+    idx = ImageIndex()
+    built = idx.build()
+    print(f"Indexed {len(built)} images → {idx._index_path}")

@@ -73,3 +73,44 @@ def test_load_returns_built_records(tmp_path):
 def test_load_missing_index_returns_none(tmp_path):
     idx = ImageIndex(db_path=tmp_path / "bank.db", index_path=tmp_path / "none.json")
     assert idx.load() is None
+
+
+def test_build_excludes_non_neurosurgical(tmp_path):
+    db = tmp_path / "bank.db"
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "CREATE TABLE images (fig_id TEXT, cluster TEXT, pmcid TEXT, pmid TEXT, "
+        "caption TEXT, local_path TEXT)"
+    )
+    conn.execute(
+        "CREATE TABLE labels (fig_id TEXT, modality TEXT, surgical_usefulness INTEGER, "
+        "anatomy TEXT, pathology TEXT, procedure TEXT, caption_summary TEXT, "
+        "keywords TEXT, is_neurosurgical INTEGER)"
+    )
+    good = tmp_path / "good.jpg"
+    good.write_bytes(b"\xff\xd8\xff" + b"x" * 5000)
+    conn.execute(
+        "INSERT INTO images VALUES (?,?,?,?,?,?)",
+        ("NSG_Fig1", "spine", "PMC10", "10", "Valid neurosurgical figure", str(good)),
+    )
+    conn.execute(
+        "INSERT INTO labels VALUES (?,?,?,?,?,?,?,?,?)",
+        ("NSG_Fig1", "MRI", 5, "lumbar", "HNP", "discectomy", "summary", "mri,spine", 1),
+    )
+    # Non-neurosurgical row — same good file, is_neurosurgical=0
+    conn.execute(
+        "INSERT INTO images VALUES (?,?,?,?,?,?)",
+        ("GEN_Fig1", "general", "PMC11", "11", "General surgery figure", str(good)),
+    )
+    conn.execute(
+        "INSERT INTO labels VALUES (?,?,?,?,?,?,?,?,?)",
+        ("GEN_Fig1", "CT", 3, "abdomen", "appendicitis", "appendectomy", "summary", "ct", 0),
+    )
+    conn.commit()
+    conn.close()
+
+    out = tmp_path / "image_index.json"
+    records = ImageIndex(db_path=db, index_path=out).build()
+    fig_ids = [r["fig_id"] for r in records]
+    assert "NSG_Fig1" in fig_ids
+    assert "GEN_Fig1" not in fig_ids
