@@ -1846,8 +1846,9 @@ def _render_bound_images(schema: dict[str, Any]) -> str:
 
     lines: list[str] = ["", "### Prep Images From Image Bank", ""]
     for spec, imgs in by_spec.items():
-        lines.append(f"**{spec}**")
-        lines.append("")
+        if spec:
+            lines.append(f"**{spec}**")
+            lines.append("")
         for img in imgs:
             caption = img.get("caption", "")
             path = img.get("local_path", "")
@@ -1856,7 +1857,8 @@ def _render_bound_images(schema: dict[str, Any]) -> str:
                 f"https://pmc.ncbi.nlm.nih.gov/articles/{pmcid}/"
                 if pmcid else ""
             )
-            lines.append(f"![{caption}]({path})")
+            alt = caption.replace("]", "\\]")
+            lines.append(f"![{alt}]({path})")
             src = f" — source: [{pmcid}]({link})" if link else ""
             lines.append(f"*{caption}*{src}")
             lines.append("")

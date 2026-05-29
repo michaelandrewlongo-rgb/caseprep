@@ -15,3 +15,12 @@ def test_render_bound_images_groups_by_spec_with_source_link():
 
 def test_render_bound_images_empty_when_none():
     assert _render_bound_images({"imaging_review": {}}) == ""
+
+
+def test_render_bound_images_no_pmcid_no_link():
+    schema = {"imaging_review": {"bound_images": [
+        {"local_path": "/img/b.jpg", "caption": "Axial NCCT", "matched_spec": "NCCT."},
+    ]}}
+    out = _render_bound_images(schema)
+    assert "ncbi" not in out
+    assert "source:" not in out
