@@ -10,6 +10,7 @@ from __future__ import annotations
 import inspect
 import re
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Any, Protocol
 
 from caseprep.case_parser import CaseField, parse_case_input, select_procedure_family
@@ -720,7 +721,7 @@ def _bind_image_bank(
     *,
     retriever: ImageBankRetriever | None,
     warnings: list[str] | None,
-    index_path=None,
+    index_path: Path | None = None,
 ) -> None:
     """Attach curated image-bank figures to the schema's image specs.
 
@@ -753,7 +754,7 @@ def _write_core_artifacts(
     profile: str,
     evidence: list[EvidenceRecord],
     sections: list[SectionDraft],
-    provenance: list[Any],
+    provenance: list[ProvenanceRecord],
     markdown: str,
     structured_case: dict[str, Any] | None = None,
     procedure_family: dict[str, Any] | None = None,

@@ -24,3 +24,4 @@ def test_bind_image_bank_handles_missing_index(tmp_path):
                      index_path=tmp_path / "absent.json")
     assert schema["imaging_review"].get("bound_images", []) == []
     assert provenance == []
+    assert any("no images bound" in w for w in warnings)
