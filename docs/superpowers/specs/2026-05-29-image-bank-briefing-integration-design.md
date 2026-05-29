@@ -26,8 +26,9 @@ bank images to those specs, with full source provenance, rendered inline.
    strings.
 2. Every surfaced image is traceable to its source paper (PMCID/PMID + caption);
    nothing is generated or inferred.
-3. Render images inline under the section that requested them, in both Markdown
-   and HTML outputs.
+3. Render images inline under the section that requested them in Markdown output.
+   HTML rendering of bound images is deferred until the product introduces an
+   HTML briefing body (currently only resource-links.html exists).
 4. Graceful degradation: if the image index is unavailable, the briefing renders
    exactly as it does today (no images, no crash).
 
@@ -91,14 +92,19 @@ Given an image-spec string + section context, return ranked `ImageMatch`es.
   3. **Lexical score:** token-overlap (Jaccard or weighted overlap) of the
      spec's content tokens against `caption_summary ∪ keywords ∪ anatomy ∪
      procedure`, with modality match as a hard prefilter / strong boost.
-  4. **Threshold + cap:** drop matches below `MIN_SCORE`; return top_k.
+  4. **Overlap gate + cap:** require at least `MIN_OVERLAP` (≥2) matched content
+     tokens; return top_k ranked by score then surgical usefulness.
 - **Graceful degradation:** index unavailable or empty result → return `[]`
   (mirrors `SemanticCorpusRetriever`'s contract).
 - **`ImageMatch`** = `{fig_id, local_path, caption, pmcid, pmid, score,
   matched_spec, matched_tokens}`.
 - **Depends on:** `ImageIndex`.
 
-### Unit 3 — Binding step (in the core builder)
+### Unit 3 — Binding step (in the core builder, not the static scaffold)
+
+Note: image binding is wired into the core/evidence pipeline (`build_core_case_plan` →
+`_write_core_artifacts`). The `generate_caseprep` static-scaffold path intentionally
+does not bind images.
 
 For each thrombectomy section carrying image-spec strings, call the retriever
 and attach matches to the schema under a new per-section `images` list:
@@ -115,11 +121,12 @@ For each attached image, write a provenance entry:
 `source_ids = ["PMC…", "pmid-…"]`,
 `notes = "matched spec '<spec>' via tokens {…} (score 0.NN)"`.
 
-### Touch-point — Renderers (`renderers/markdown.py`, `renderers/html.py`)
+### Touch-point — Renderers (`renderers/markdown.py`)
 
-Under each section that has bound images, emit them: image (Markdown
-`![caption](local_path)` / HTML `<figure>`), caption, and a source link to the
-PMC article. No layout changes elsewhere.
+Under each section that has bound images, emit them in Markdown:
+`![caption](local_path)`, caption, and a source link to the PMC article.
+No layout changes elsewhere. HTML rendering of bound images is deferred (the
+current HTML artifact is only the resource-links search-links page).
 
 ## Data flow
 
@@ -136,7 +143,7 @@ PMC article. No layout changes elsewhere.
             schema.<section>.images[] = [{local_path, caption, pmcid, pmid, score}]
                           ┌───────────────┴───────────────┐
                           ▼                                ▼
-              provenance.json entry              markdown / HTML inline render
+              provenance.json entry              Markdown inline render
             (generated, source = PMCID)        (image + caption + PMC source link)
 ```
 
@@ -146,7 +153,7 @@ PMC article. No layout changes elsewhere.
 |---|---|
 | Index sidecar missing | `ImageIndex.load()` → unavailable; retriever returns `[]`; builder emits existing "zero records" warning; briefing renders without images. |
 | Spec yields no modality hint | Skip modality constraint; score by lexical overlap within clusters only. |
-| All matches below `MIN_SCORE` | Attach no image to that section (precision over recall). |
+| All matches below `MIN_OVERLAP` (< 2 matched tokens) | Attach no image to that section (precision over recall). |
 | `local_path` points to a missing file | Skip that record at index-build time; never bind a broken path. |
 | Image is a known-bad file (e.g. 1×1 px) | Index-build filters by minimum file size / dimensions. |
 
@@ -154,14 +161,14 @@ PMC article. No layout changes elsewhere.
 
 - **Unit — modality parsing:** `"NCCT axial ASPECTS images"` → `CT`;
   `"final DSA showing TICI grade"` → `DSA/angiogram`; unknown → no constraint.
-- **Unit — threshold gating:** below `MIN_SCORE` → `[]`.
+- **Unit — overlap gating:** below `MIN_OVERLAP` (< 2 matched tokens) → `[]`.
 - **Unit — graceful degradation:** missing index → `[]`, no exception.
 - **Unit — index build hygiene:** rows with missing/0-byte/1×1 files excluded.
 - **Integration:** fixture thrombectomy schema → the ASPECTS spec binds a
   `CT`-modality image from `stroke_thrombectomy`; assert a provenance entry
   exists carrying that image's PMCID.
-- **Render snapshot:** Markdown + HTML for a section include the image and a PMC
-  source link.
+- **Render snapshot:** Markdown for a section includes the image and a PMC
+  source link (HTML rendering of bound images is deferred).
 
 ## Deferred work (next cycle, tracked in README)
 
@@ -182,5 +189,5 @@ sections to a complete, fully-sourced standard and close gaps:
   provenance writer rather than inventing new ones.
 - Index sidecar format (JSON vs `image_index` table in `bank.db`) to be settled
   in the implementation plan; both satisfy the offline-build, fast-load contract.
-- `MIN_SCORE` and `top_k` defaults to be tuned against a handful of real
+- `MIN_OVERLAP` and `top_k` defaults to be tuned against a handful of real
   thrombectomy specs during implementation; start conservative (high precision).

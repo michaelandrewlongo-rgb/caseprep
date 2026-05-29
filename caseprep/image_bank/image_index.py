@@ -65,7 +65,7 @@ class ImageIndex:
             )
             records.append({
                 "fig_id": fig_id,
-                "local_path": str(local_path),
+                "local_path": str(path),
                 "pmcid": str(pmcid or ""),
                 "pmid": str(pmid or ""),
                 "cluster": str(cluster or ""),

@@ -119,8 +119,6 @@ class ImageBankRetriever:
         for rec in pool:
             cand = set(rec["tokens"])
             overlap = want_tokens & cand
-            if not overlap:
-                continue
             # score = fraction of the spec's content tokens found in this image (spec-coverage).
             score = len(overlap) / len(want_tokens)
             if len(overlap) < self._min_overlap:

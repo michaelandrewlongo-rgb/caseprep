@@ -1,5 +1,4 @@
 from caseprep.schema import _render_bound_images
-from caseprep.renderers.html import render_bound_images_html
 
 
 def test_render_bound_images_groups_by_spec_with_source_link():
@@ -27,21 +26,6 @@ def test_render_bound_images_no_pmcid_no_link():
     assert "source:" not in out
 
 
-def test_render_bound_images_html_has_figure_and_link():
-    schema = {"imaging_review": {"bound_images": [
-        {"local_path": "/img/a.jpg", "caption": "Final DSA", "pmcid": "PMC2",
-         "pmid": "2", "score": 0.5, "matched_spec": "Final DSA projections."},
-    ]}}
-    html = render_bound_images_html(schema)
-    assert "<figure" in html
-    assert 'src="/img/a.jpg"' in html
-    assert "PMC2" in html
-
-
-def test_render_bound_images_html_empty_when_none():
-    assert render_bound_images_html({"imaging_review": {}}) == ""
-
-
 from caseprep.image_binding import bind_images_to_schema
 from caseprep.retrievers.image_bank import ImageBankRetriever
 
@@ -59,5 +43,3 @@ def test_binding_then_render_round_trip():
     bind_images_to_schema(schema, retriever)
     out = _render_bound_images(schema)
     assert "Final DSA TICI 3" in out and "PMC1" in out
-    html = render_bound_images_html(schema)
-    assert "Final DSA TICI 3" in html and "PMC1" in html and "<figure" in html
