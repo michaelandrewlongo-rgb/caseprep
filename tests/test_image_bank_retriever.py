@@ -21,6 +21,11 @@ def test_spec_tokens_drops_stopwords():
     assert "ncct" in toks and "aspects" in toks
 
 
+def test_parse_modality_hint_first_match_wins():
+    # "cta" precedes "perfusion", so CT_angiography wins over CT
+    assert parse_modality_hint("CTA source images and perfusion maps.") == "CT_angiography"
+
+
 def test_image_match_to_dict_rounds_score():
     m = ImageMatch("f", "/p.jpg", "cap", "PMC1", "1", 0.123456, "spec", ["a"])
     assert m.to_dict()["score"] == 0.1235

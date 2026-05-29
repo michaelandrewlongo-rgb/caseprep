@@ -16,6 +16,8 @@ THROMBECTOMY_CLUSTERS = frozenset({
     "general_neurointerventional",
 })
 
+# Spec-keyword → bank modality. Tuned for thrombectomy specs (NCCT/CTA/DSA/CTP);
+# parse_modality_hint returns the FIRST hint in reading order.
 MODALITY_HINTS = {
     "ncct": "CT", "noncontrast": "CT", "non-contrast": "CT", "ct": "CT",
     "ctp": "CT", "perfusion": "CT",
