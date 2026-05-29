@@ -72,3 +72,34 @@ def test_retrieve_below_threshold_returns_empty():
 
 def test_retrieve_none_index_returns_empty():
     assert ImageBankRetriever(index=None).retrieve("NCCT ASPECTS images.") == []
+
+
+def test_retrieve_modality_relax_when_no_modality_match():
+    # Spec asks for MRI/DWI, but the only in-cluster image is CT → relax to
+    # cluster pool rather than returning nothing.
+    index = [
+        {"fig_id": "PMC2_F1", "local_path": "/b.jpg", "pmcid": "PMC2", "pmid": "2",
+         "cluster": "stroke_thrombectomy", "modality": "CT",
+         "caption": "DWI infarct core", "surgical_usefulness": 4,
+         "tokens": ["dwi", "infarct", "core"]},
+    ]
+    r = ImageBankRetriever(index=index)
+    matches = r.retrieve("DWI infarct core images.", top_k=2)
+    assert matches and matches[0].fig_id == "PMC2_F1"
+
+
+def test_retrieve_tiebreak_prefers_higher_usefulness():
+    # Two equal-scoring CT matches; higher surgical_usefulness must rank first.
+    index = [
+        {"fig_id": "PMC_low", "local_path": "/l.jpg", "pmcid": "PMCL", "pmid": "1",
+         "cluster": "stroke_thrombectomy", "modality": "CT",
+         "caption": "low", "surgical_usefulness": 3,
+         "tokens": ["aspects", "hemorrhage"]},
+        {"fig_id": "PMC_high", "local_path": "/h.jpg", "pmcid": "PMCH", "pmid": "2",
+         "cluster": "stroke_thrombectomy", "modality": "CT",
+         "caption": "high", "surgical_usefulness": 5,
+         "tokens": ["aspects", "hemorrhage"]},
+    ]
+    r = ImageBankRetriever(index=index)
+    matches = r.retrieve("NCCT ASPECTS hemorrhage images.", top_k=2)
+    assert [m.fig_id for m in matches] == ["PMC_high", "PMC_low"]
