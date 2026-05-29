@@ -59,3 +59,5 @@ def test_binding_then_render_round_trip():
     bind_images_to_schema(schema, retriever)
     out = _render_bound_images(schema)
     assert "Final DSA TICI 3" in out and "PMC1" in out
+    html = render_bound_images_html(schema)
+    assert "Final DSA TICI 3" in html and "PMC1" in html and "<figure" in html
