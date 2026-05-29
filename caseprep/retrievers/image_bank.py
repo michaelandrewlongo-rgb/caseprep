@@ -79,7 +79,69 @@ def spec_tokens(spec: str) -> set[str]:
     return {t for t in raw if t not in SPEC_STOPWORDS}
 
 
+class ImageBankRetriever:
+    """Rank curated bank images for a single image-spec string.
+
+    Pure/deterministic: no network, no model. ``index`` is the list produced by
+    ``ImageIndex.load()``; ``None`` (missing sidecar) yields ``[]`` so callers
+    degrade gracefully, mirroring SemanticCorpusRetriever's contract.
+    """
+
+    def __init__(
+        self,
+        *,
+        index: list[dict] | None,
+        clusters: frozenset[str] = THROMBECTOMY_CLUSTERS,
+        min_score: float = MIN_SCORE,
+    ) -> None:
+        self._index = index
+        self._clusters = clusters
+        self._min_score = min_score
+
+    def retrieve(self, spec: str, *, top_k: int = DEFAULT_TOP_K) -> list[ImageMatch]:
+        if not self._index:
+            return []
+        want_tokens = spec_tokens(spec)
+        if not want_tokens:
+            return []
+        modality = parse_modality_hint(spec)
+
+        # Cluster prefilter.
+        pool = [r for r in self._index if r["cluster"] in self._clusters]
+        # Modality prefilter (relax if it would empty the pool).
+        if modality:
+            narrowed = [r for r in pool if r["modality"] == modality]
+            if narrowed:
+                pool = narrowed
+
+        scored: list[ImageMatch] = []
+        for rec in pool:
+            cand = set(rec["tokens"])
+            overlap = want_tokens & cand
+            if not overlap:
+                continue
+            score = len(overlap) / len(want_tokens)
+            if score < self._min_score:
+                continue
+            scored.append(ImageMatch(
+                fig_id=rec["fig_id"],
+                local_path=rec["local_path"],
+                caption=rec["caption"],
+                pmcid=rec["pmcid"],
+                pmid=rec["pmid"],
+                score=score,
+                matched_spec=spec,
+                matched_tokens=sorted(overlap),
+            ))
+
+        # Rank: score desc, then surgical_usefulness desc, then fig_id for stability.
+        usefulness = {r["fig_id"]: r["surgical_usefulness"] for r in pool}
+        scored.sort(key=lambda m: (-m.score, -usefulness.get(m.fig_id, 0), m.fig_id))
+        return scored[:top_k]
+
+
 __all__ = [
     "ImageMatch", "parse_modality_hint", "spec_tokens",
     "THROMBECTOMY_CLUSTERS", "MIN_SCORE", "DEFAULT_TOP_K",
+    "ImageBankRetriever",
 ]
