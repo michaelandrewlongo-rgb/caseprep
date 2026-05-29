@@ -83,3 +83,27 @@ The goal is to bring **all** procedure families to the same level of output qual
 4. **Per-family clinical applicability rules** — Each family needs tuned quarantine rules like the ACDF rules added here, keyed off `family.id` in `classify_clinical_applicability()`.
 
 5. **Deterministic eval hardening** — Tighten gates so `needs input` / `needs synthesis` placeholders in evidence sections fail the canonical eval for any family that has completed its evidence pipeline.
+
+## Image Bank Integration
+
+The curated image bank (`caseprep/image_bank/`, ~20k neurosurgically-relevant
+figures with structured labels) feeds prep images into briefings.
+
+**In progress — thrombectomy exemplar** (design:
+`docs/superpowers/specs/2026-05-29-image-bank-briefing-integration-design.md`):
+bind curated bank images to the thrombectomy schema's existing image-spec
+strings (e.g. `images_to_display_in_or`) via a deterministic
+structured-filter + lexical matcher, with full source provenance (each image
+traceable to its PMCID/PMID + caption) and inline Markdown/HTML rendering.
+Precision over recall: below threshold, no image rather than a wrong one.
+
+**Next — briefing clinical-content completeness for neuro-IR.** Bring the
+thrombectomy briefing to a complete, fully-sourced standard:
+
+1. **Add a `prognostic_signs` schema block** (favorable / unfavorable outcome
+   indicators) — currently not modeled.
+2. **Source-coverage audit** — every clinical claim in each section carries a
+   `source_id`; no silent `needs input` where evidence exists.
+3. **Extend across the neuro-IR family** — apply the same completeness +
+   image-integration bar to aneurysm coiling, flow diversion, AVM/dAVF
+   embolization, carotid stenting, and venous procedures.
