@@ -254,3 +254,45 @@ def test_hydrate_absent_leaves_text_unchanged(monkeypatch):
     recs = r.retrieve("q")  # no hydrator passed
     assert recs[0].text == "T"
     assert recs[0].metadata["text_hydrated"] is False
+
+
+# --- Live-contract regression (real /v1/ask shape) ---------------------------
+# The live AskResponse has NO "citations" key; it exposes "retrieved_papers"
+# (and "papers" as an alias, "cited_papers" as the LLM-cited subset). These
+# tests lock the real field names so a refactor can't silently regress to the
+# mocked-only "citations" shape.
+
+def test_retrieve_reads_retrieved_papers_key(monkeypatch):
+    def handler(request):
+        return httpx.Response(200, json={
+            "answer": "synthesized prose to discard",
+            "retrieved_papers": [
+                {"pmid": "111", "doi": "10.1/a", "title": "A", "pub_year": 2021},
+                {"pmid": "222", "doi": "10.1/b", "title": "B", "pub_year": 2020},
+            ],
+            "cited_papers": [],
+            "papers": [
+                {"pmid": "111", "doi": "10.1/a", "title": "A", "pub_year": 2021},
+                {"pmid": "222", "doi": "10.1/b", "title": "B", "pub_year": 2020},
+            ],
+        })
+    r = _retriever(monkeypatch, handler)
+    recs = r.retrieve("q", top_n=5)
+    assert [x.metadata["pmid"] for x in recs] == ["111", "222"]
+    assert all("synthesized" not in x.text.lower() for x in recs)
+
+
+def test_retrieve_against_saved_live_fixture(monkeypatch):
+    import json
+    import pathlib
+    fixture = pathlib.Path(__file__).parent / "fixtures" / "papers_ask_live_response.json"
+    payload = json.loads(fixture.read_text())
+
+    def handler(request):
+        return httpx.Response(200, json=payload)
+    r = _retriever(monkeypatch, handler)
+    recs = r.retrieve("bp targets after thrombectomy", top_n=6)
+    # The captured live response carried 6 fully-identified papers.
+    assert len(recs) == 6
+    assert all(x.metadata["pmid"] for x in recs)
+    assert all(x.metadata["provenance_key"] == "pmid" for x in recs)

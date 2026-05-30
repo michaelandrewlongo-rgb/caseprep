@@ -48,6 +48,24 @@ class PapersAskConfig:
         )
 
 
+# Field on the /v1/ask response that holds the retrieved paper list. The live
+# AskResponse exposes `retrieved_papers` (all retrieved, capped at max_papers)
+# and `cited_papers` (subset cited in the synthesized answer). We want the full
+# retrieved set as evidence candidates, not only what the LLM happened to cite.
+# `papers` is a backward-compat alias for `retrieved_papers`; a legacy
+# `citations` key is accepted last so older/mocked shapes still work.
+_CITATION_KEYS = ("retrieved_papers", "papers", "citations")
+
+
+def _citation_list(data: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return the paper/citation list from an /v1/ask response, shape-tolerant."""
+    for key in _CITATION_KEYS:
+        value = data.get(key)
+        if isinstance(value, list) and value:
+            return value
+    return []
+
+
 def _slug(text: str) -> str:
     s = re.sub(r"[^a-z0-9]+", "-", (text or "").lower()).strip("-")
     return s[:60] or "untitled"
@@ -146,7 +164,7 @@ class PapersAskRetriever:
             return []
 
         records: list[EvidenceRecord] = []
-        for cit in (data.get("citations") or []):
+        for cit in _citation_list(data):
             rec = citation_to_record(cit)
             if rec is None:
                 continue
