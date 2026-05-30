@@ -37,6 +37,7 @@ from caseprep.scoring import (
 )
 from caseprep.retrievers.corpus import CorpusRetriever
 from caseprep.retrievers.corpus_semantic import SemanticCorpusRetriever
+from caseprep.retrievers.papers_ask import PapersAskRetriever
 from caseprep.retrievers.pubmed import PubMedRetriever
 from caseprep.retrievers.radiology import RadiologyRetriever
 from caseprep.retrievers.board_cards import BoardCardRecord, BoardCardRetriever
@@ -105,6 +106,7 @@ class CoreRetrieverSet:
     corpus: CorpusRetrieverProtocol
     corpus_semantic: CorpusRetrieverProtocol | None = None
     board_cards: BoardCardRetriever | None = None
+    papers_ask: CorpusRetrieverProtocol | None = None
 
 
 MAX_RETRIEVAL_CAP = 10
@@ -247,6 +249,7 @@ def default_core_retrievers() -> CoreRetrieverSet:
         corpus=CorpusRetriever(),
         corpus_semantic=SemanticCorpusRetriever(),
         board_cards=BoardCardRetriever(top_n=5),
+        papers_ask=PapersAskRetriever(),
     )
 
 
