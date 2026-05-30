@@ -75,6 +75,7 @@ The goal is to bring **all** procedure families to the same level of output qual
 **Planned work:**
 
 1. **pgvector corpus integration** — Route non-neurointerventional family queries (spine, tumor, functional, Chiari) to the PostgreSQL/pgvector corpus with 1.7M papers instead of relying solely on the lean neurointerventional SQLite database. This will unlock ACDF technique/outcome papers and all other spine surgery literature that doesn't exist in the current local corpus.
+   - First increment delivered: an opt-in **PAPERS `/v1/ask` retriever** (`CASEPREP_PAPERS_ENABLED=1`) that pulls cited evidence from the local PAPERS corpus service — citations-only, PMID-hydrated, and a no-op when the service is unreachable. See `docs/superpowers/specs/2026-05-30-papers-ask-retriever-design.md`.
 
 2. **Per-family evidence packs** — Extend the evidence-pack pattern (tiered, required-for, conditional) from thrombectomy to all procedure families: ACDF, convexity meningioma, Chiari, functional epilepsy, and future families.
 

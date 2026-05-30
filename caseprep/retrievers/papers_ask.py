@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -118,7 +119,7 @@ class PapersAskRetriever:
         return "session" in client.cookies
 
     def retrieve(self, query: str, *, subdomain: str | None = None,
-                 top_n: int = 8, hydrate_text=None) -> list[EvidenceRecord]:
+                 top_n: int = 8, hydrate_text: Callable[[str], str] | None = None) -> list[EvidenceRecord]:
         del subdomain  # accepted for protocol symmetry; PAPERS parses its own filters
         cfg = self._cfg
         if not cfg.enabled or not (query or "").strip():
