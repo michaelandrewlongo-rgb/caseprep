@@ -106,3 +106,52 @@ def test_config_reads_env(monkeypatch):
     assert cfg.auth == "cookie"
     assert cfg.password == "neuro"
     assert cfg.max_papers == 5
+
+
+# ---------------------------------------------------------------------------
+# Task 3: PapersAskRetriever
+# ---------------------------------------------------------------------------
+
+import httpx
+from caseprep.retrievers.papers_ask import PapersAskConfig, PapersAskRetriever
+
+
+def _retriever(monkeypatch, handler, **cfg_over):
+    cfg = PapersAskConfig(enabled=True, **cfg_over)
+    r = PapersAskRetriever(config=cfg)
+    monkeypatch.setattr(r, "_client_factory",
+                        lambda: httpx.Client(transport=httpx.MockTransport(handler)))
+    return r
+
+
+def test_retrieve_keeps_citations_discards_answer(monkeypatch):
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v1/ask"
+        assert request.method == "POST"
+        return httpx.Response(200, json={
+            "answer": "Synthesized prose we must discard.",
+            "citations": [
+                {"citation_number": 1, "pmid": "111", "doi": "", "title": "Paper A",
+                 "journal": "Stroke", "pub_year": 2022, "primary_domain": "cerebrovascular",
+                 "study_type_hint": "rct", "evidence_source": "full_text",
+                 "passage_count": 2, "scores": {"rerank": 0.8}},
+                {"citation_number": 2, "pmid": "222", "doi": "", "title": "Paper B",
+                 "journal": "JNS", "pub_year": 2020, "primary_domain": "cerebrovascular",
+                 "study_type_hint": "cohort", "evidence_source": "abstract_only",
+                 "passage_count": 0, "scores": {}},
+            ],
+        })
+    r = _retriever(monkeypatch, handler)
+    recs = r.retrieve("bp targets after thrombectomy", top_n=5)
+    assert [x.metadata["pmid"] for x in recs] == ["111", "222"]
+    assert all(x.source == "papers" for x in recs)
+    assert all("Synthesized" not in x.text for x in recs)
+
+
+def test_retrieve_respects_top_n(monkeypatch):
+    def handler(request):
+        return httpx.Response(200, json={"citations": [
+            {"pmid": str(i), "title": f"P{i}", "pub_year": 2020} for i in range(10)
+        ]})
+    r = _retriever(monkeypatch, handler)
+    assert len(r.retrieve("q", top_n=3)) == 3

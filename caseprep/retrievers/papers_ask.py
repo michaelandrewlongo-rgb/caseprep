@@ -7,10 +7,13 @@ degrades to [] on any failure so a briefing is never blocked.
 """
 from __future__ import annotations
 
+import logging
 import os
 import re
 from dataclasses import dataclass
 from typing import Any
+
+import httpx
 
 from caseprep.core import EvidenceRecord
 
@@ -87,3 +90,48 @@ def citation_to_record(cit: dict[str, Any]) -> EvidenceRecord | None:
         "rerank": scores.get("rerank"),
     }
     return EvidenceRecord(id=rec_id, source="papers", title=title, text=text, metadata=metadata)
+
+
+logger = logging.getLogger(__name__)
+
+
+class PapersAskRetriever:
+    """Citations-only retriever over PAPERS /v1/ask. Degrades to [] on any failure."""
+
+    def __init__(self, *, config: PapersAskConfig | None = None) -> None:
+        self._cfg = config or PapersAskConfig.from_env()
+
+    def _client_factory(self) -> httpx.Client:
+        return httpx.Client(timeout=self._cfg.timeout_s)
+
+    def retrieve(self, query: str, *, subdomain: str | None = None,
+                 top_n: int = 8) -> list[EvidenceRecord]:
+        del subdomain  # accepted for protocol symmetry; PAPERS parses its own filters
+        cfg = self._cfg
+        if not cfg.enabled or not (query or "").strip():
+            return []
+        payload = {
+            "question": query.strip(),
+            "max_papers": min(cfg.max_papers, 50),
+            "include_figures": False,
+            "use_passages": True,
+        }
+        try:
+            with self._client_factory() as client:
+                resp = client.post(f"{cfg.base_url}/v1/ask", json=payload)
+            if resp.status_code != 200:
+                logger.warning("papers_ask: /v1/ask returned %s", resp.status_code)
+                return []
+            data = resp.json()
+        except Exception as exc:  # never block a briefing
+            logger.warning("papers_ask: request failed: %s", exc)
+            return []
+
+        records: list[EvidenceRecord] = []
+        for cit in (data.get("citations") or []):
+            rec = citation_to_record(cit)
+            if rec is not None:
+                records.append(rec)
+            if len(records) >= top_n:
+                break
+        return records
