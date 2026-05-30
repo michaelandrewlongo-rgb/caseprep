@@ -155,3 +155,39 @@ def test_retrieve_respects_top_n(monkeypatch):
         ]})
     r = _retriever(monkeypatch, handler)
     assert len(r.retrieve("q", top_n=3)) == 3
+
+
+# ---------------------------------------------------------------------------
+# Task 4: Graceful degradation tests
+# ---------------------------------------------------------------------------
+
+def test_disabled_returns_empty(monkeypatch):
+    def handler(request):  # should never be called
+        raise AssertionError("network touched while disabled")
+    cfg = PapersAskConfig(enabled=False)
+    r = PapersAskRetriever(config=cfg)
+    monkeypatch.setattr(r, "_client_factory",
+                        lambda: httpx.Client(transport=httpx.MockTransport(handler)))
+    assert r.retrieve("q") == []
+
+
+def test_401_returns_empty(monkeypatch):
+    r = _retriever(monkeypatch, lambda req: httpx.Response(401, json={"error": "auth"}))
+    assert r.retrieve("q") == []
+
+
+def test_429_returns_empty(monkeypatch):
+    r = _retriever(monkeypatch, lambda req: httpx.Response(429, json={"error": "rate"}))
+    assert r.retrieve("q") == []
+
+
+def test_connect_error_returns_empty(monkeypatch):
+    def handler(request):
+        raise httpx.ConnectError("refused")
+    r = _retriever(monkeypatch, handler)
+    assert r.retrieve("q") == []
+
+
+def test_empty_query_returns_empty(monkeypatch):
+    r = _retriever(monkeypatch, lambda req: httpx.Response(200, json={"citations": []}))
+    assert r.retrieve("   ") == []
