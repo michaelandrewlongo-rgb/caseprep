@@ -45,9 +45,22 @@ from background. The two systems share a spine.
   `year_from/to`, `min_confidence` — populated from the case when available
 
 **Response** (`AskResponse`) — we consume only:
-- `citations: list[PaperCitation]` — the payload we keep
-- `retrieval_count`, `model`, `warnings` — logged, not rendered
-- `answer`, `figure_hits`, `grounded_claims` — **discarded**
+- `retrieved_papers: list[PaperCitation]` — the payload we keep (full retrieved
+  set, capped at `max_papers`). **Corrected after live validation:** the running
+  service has **no `citations` key** — it exposes `retrieved_papers`, a `papers`
+  alias, and a `cited_papers` subset (only what the LLM cited in `answer`). The
+  retriever reads `retrieved_papers` → `papers` → legacy `citations` via
+  `_citation_list()`, working against the live service and older/mocked shapes.
+- `retrieval_count`, `usage`, `status`, `truncated` — logged, not rendered
+- `answer`, `cited_papers`, `figure_hits`, `grounded_claims` — **discarded**
+
+Live validation (2026-05-30, container recreated with `ASK_PUBLIC_API_ENABLED=1`):
+a no-cookie `POST /v1/ask` for a thrombectomy BP question returned HTTP 200 with
+6 `retrieved_papers`, **all carrying PMID + DOI** — landmark thrombectomy trials.
+An end-to-end run of the enabled retriever against the live service likewise
+returned 6 PMID-identified `EvidenceRecord`s. This retires the earlier
+"PMID-coverage gap" worry in §9 (it had been based on misread 401 errors). The
+captured response is saved as `tests/fixtures/papers_ask_live_response.json`.
 
 **`PaperCitation` fields:**
 `citation_number, pmid, doi, title, journal, pub_year, primary_domain,
