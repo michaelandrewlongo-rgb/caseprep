@@ -1831,6 +1831,40 @@ def _render_case_summary(schema: dict[str, Any]) -> str:
 """
 
 
+def _render_bound_images(schema: dict[str, Any]) -> str:
+    """Render image-bank figures bound to the imaging section, grouped by spec."""
+    section = schema.get("imaging_review")
+    if not isinstance(section, dict):
+        return ""
+    bound = section.get("bound_images") or []
+    if not bound:
+        return ""
+
+    by_spec: dict[str, list[dict[str, Any]]] = {}
+    for img in bound:
+        by_spec.setdefault(img.get("matched_spec", ""), []).append(img)
+
+    lines: list[str] = ["", "### Prep Images From Image Bank", ""]
+    for spec, imgs in by_spec.items():
+        if spec:
+            lines.append(f"**{spec}**")
+            lines.append("")
+        for img in imgs:
+            caption = img.get("caption", "")
+            path = img.get("local_path", "")
+            pmcid = img.get("pmcid", "")
+            link = (
+                f"https://pmc.ncbi.nlm.nih.gov/articles/{pmcid}/"
+                if pmcid else ""
+            )
+            alt = caption.replace("]", "\\]")
+            lines.append(f"![{alt}]({path})")
+            src = f" — source: [{pmcid}]({link})" if link else ""
+            lines.append(f"*{caption}*{src}")
+            lines.append("")
+    return "\n".join(lines)
+
+
 def _render_imaging(schema: dict[str, Any]) -> str:
     if _is_thrombectomy(schema):
         return _render_thrombectomy_imaging(schema)
@@ -1861,7 +1895,7 @@ def _render_imaging(schema: dict[str, Any]) -> str:
 ### Images To Display In OR
 
 {_list_block(_section_list(schema, "imaging_review", "images_to_display_in_or"))}
-"""
+{_render_bound_images(schema)}"""
 
 
 def _render_thrombectomy_imaging(schema: dict[str, Any]) -> str:
@@ -1917,7 +1951,7 @@ Patient-specific imaging values are **incomplete/need input** unless supplied be
 ### Images To Display In Angio Suite
 
 {_list_block(_section_list(schema, "imaging_review", "images_to_display_in_or"))}
-"""
+{_render_bound_images(schema)}"""
 
 
 def _generated_section(title: str, generated_body: str | None) -> str:
