@@ -191,3 +191,35 @@ def test_connect_error_returns_empty(monkeypatch):
 def test_empty_query_returns_empty(monkeypatch):
     r = _retriever(monkeypatch, lambda req: httpx.Response(200, json={"citations": []}))
     assert r.retrieve("   ") == []
+
+
+# ---------------------------------------------------------------------------
+# Task 5: Cookie auth strategy
+# ---------------------------------------------------------------------------
+
+def test_cookie_auth_logs_in_before_ask(monkeypatch):
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        if request.url.path == "/login":
+            return httpx.Response(302, headers={"set-cookie": "session=abc; Path=/"})
+        if request.url.path == "/v1/ask":
+            assert "session=abc" in request.headers.get("cookie", "")
+            return httpx.Response(200, json={"citations": [
+                {"pmid": "1", "title": "P", "pub_year": 2020}]})
+        return httpx.Response(404)
+
+    r = _retriever(monkeypatch, handler, auth="cookie", password="neuro")
+    recs = r.retrieve("q")
+    assert "/login" in calls and "/login" == calls[0]
+    assert [x.metadata["pmid"] for x in recs] == ["1"]
+
+
+def test_cookie_login_failure_returns_empty(monkeypatch):
+    def handler(request):
+        if request.url.path == "/login":
+            return httpx.Response(200)  # HTML re-render = wrong password, no cookie
+        raise AssertionError("must not call /v1/ask without a session cookie")
+    r = _retriever(monkeypatch, handler, auth="cookie", password="wrong")
+    assert r.retrieve("q") == []

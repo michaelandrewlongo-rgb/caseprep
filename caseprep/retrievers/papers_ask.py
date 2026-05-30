@@ -104,6 +104,19 @@ class PapersAskRetriever:
     def _client_factory(self) -> httpx.Client:
         return httpx.Client(timeout=self._cfg.timeout_s)
 
+    def _login(self, client: httpx.Client) -> bool:
+        """Cookie auth: POST /login form; success iff a session cookie is set."""
+        try:
+            client.post(
+                f"{self._cfg.base_url}/login",
+                data={"password": self._cfg.password},
+                follow_redirects=False,
+            )
+        except Exception as exc:
+            logger.warning("papers_ask: login failed: %s", exc)
+            return False
+        return "session" in client.cookies
+
     def retrieve(self, query: str, *, subdomain: str | None = None,
                  top_n: int = 8) -> list[EvidenceRecord]:
         del subdomain  # accepted for protocol symmetry; PAPERS parses its own filters
@@ -118,6 +131,10 @@ class PapersAskRetriever:
         }
         try:
             with self._client_factory() as client:
+                if cfg.auth == "cookie":
+                    if not self._login(client):
+                        logger.warning("papers_ask: cookie login did not yield a session")
+                        return []
                 resp = client.post(f"{cfg.base_url}/v1/ask", json=payload)
             if resp.status_code != 200:
                 logger.warning("papers_ask: /v1/ask returned %s", resp.status_code)
