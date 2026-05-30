@@ -75,3 +75,34 @@ def test_papers_record_dedups_against_pubmed_by_pmid():
                             text="abstract", metadata={"pmid": "999"})
     out = dedupe_evidence([pubmed, papers])
     assert len(out) == 1
+
+
+def test_config_defaults_disabled(monkeypatch):
+    from caseprep.retrievers.papers_ask import PapersAskConfig
+
+    for k in ("CASEPREP_PAPERS_ENABLED", "CASEPREP_PAPERS_BASE_URL",
+              "CASEPREP_PAPERS_AUTH", "CASEPREP_PAPERS_MAX_PAPERS",
+              "CASEPREP_PAPERS_TIMEOUT_S", "CASEPREP_PAPERS_PASSWORD"):
+        monkeypatch.delenv(k, raising=False)
+    cfg = PapersAskConfig.from_env()
+    assert cfg.enabled is False
+    assert cfg.base_url == "http://127.0.0.1:8000"
+    assert cfg.auth == "none"
+    assert cfg.max_papers == 8
+    assert cfg.timeout_s == 60
+
+
+def test_config_reads_env(monkeypatch):
+    from caseprep.retrievers.papers_ask import PapersAskConfig
+
+    monkeypatch.setenv("CASEPREP_PAPERS_ENABLED", "1")
+    monkeypatch.setenv("CASEPREP_PAPERS_BASE_URL", "http://host:9000/")
+    monkeypatch.setenv("CASEPREP_PAPERS_AUTH", "cookie")
+    monkeypatch.setenv("CASEPREP_PAPERS_PASSWORD", "neuro")
+    monkeypatch.setenv("CASEPREP_PAPERS_MAX_PAPERS", "5")
+    cfg = PapersAskConfig.from_env()
+    assert cfg.enabled is True
+    assert cfg.base_url == "http://host:9000"  # trailing slash stripped
+    assert cfg.auth == "cookie"
+    assert cfg.password == "neuro"
+    assert cfg.max_papers == 5

@@ -7,10 +7,41 @@ degrades to [] on any failure so a briefing is never blocked.
 """
 from __future__ import annotations
 
+import os
 import re
+from dataclasses import dataclass
 from typing import Any
 
 from caseprep.core import EvidenceRecord
+
+
+_TRUE = {"1", "true", "yes", "on"}
+
+
+@dataclass(frozen=True)
+class PapersAskConfig:
+    enabled: bool = False
+    base_url: str = "http://127.0.0.1:8000"
+    auth: str = "none"          # "none" | "cookie"
+    password: str = ""
+    max_papers: int = 8
+    timeout_s: int = 60
+
+    @classmethod
+    def from_env(cls) -> "PapersAskConfig":
+        def _int(name: str, default: int) -> int:
+            try:
+                return int(os.environ.get(name, "") or default)
+            except ValueError:
+                return default
+        return cls(
+            enabled=(os.environ.get("CASEPREP_PAPERS_ENABLED", "").strip().lower() in _TRUE),
+            base_url=(os.environ.get("CASEPREP_PAPERS_BASE_URL") or "http://127.0.0.1:8000").rstrip("/"),
+            auth=(os.environ.get("CASEPREP_PAPERS_AUTH") or "none").strip().lower(),
+            password=os.environ.get("CASEPREP_PAPERS_PASSWORD") or "",
+            max_papers=_int("CASEPREP_PAPERS_MAX_PAPERS", 8),
+            timeout_s=_int("CASEPREP_PAPERS_TIMEOUT_S", 60),
+        )
 
 
 def _slug(text: str) -> str:
