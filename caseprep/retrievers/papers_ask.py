@@ -118,7 +118,7 @@ class PapersAskRetriever:
         return "session" in client.cookies
 
     def retrieve(self, query: str, *, subdomain: str | None = None,
-                 top_n: int = 8) -> list[EvidenceRecord]:
+                 top_n: int = 8, hydrate_text=None) -> list[EvidenceRecord]:
         del subdomain  # accepted for protocol symmetry; PAPERS parses its own filters
         cfg = self._cfg
         if not cfg.enabled or not (query or "").strip():
@@ -147,8 +147,21 @@ class PapersAskRetriever:
         records: list[EvidenceRecord] = []
         for cit in (data.get("citations") or []):
             rec = citation_to_record(cit)
-            if rec is not None:
-                records.append(rec)
+            if rec is None:
+                continue
+            rec.metadata.setdefault("text_hydrated", False)
+            pmid = rec.metadata.get("pmid")
+            if hydrate_text is not None and pmid:
+                try:
+                    text = hydrate_text(pmid)
+                except Exception as exc:
+                    logger.warning("papers_ask: hydrate failed for pmid %s: %s", pmid, exc)
+                    text = ""
+                if text:
+                    rec = EvidenceRecord(id=rec.id, source=rec.source, title=rec.title,
+                                         url=rec.url, text=text, metadata=rec.metadata)
+                    rec.metadata["text_hydrated"] = True
+            records.append(rec)
             if len(records) >= top_n:
                 break
         return records

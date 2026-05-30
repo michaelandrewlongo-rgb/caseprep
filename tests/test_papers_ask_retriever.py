@@ -223,3 +223,34 @@ def test_cookie_login_failure_returns_empty(monkeypatch):
         raise AssertionError("must not call /v1/ask without a session cookie")
     r = _retriever(monkeypatch, handler, auth="cookie", password="wrong")
     assert r.retrieve("q") == []
+
+
+# ---------------------------------------------------------------------------
+# Task 8: PMID text hydration
+# ---------------------------------------------------------------------------
+
+def test_hydrate_fills_text_for_pmid_records(monkeypatch):
+    def handler(request):
+        return httpx.Response(200, json={"citations": [
+            {"pmid": "555", "title": "Hydratable", "pub_year": 2021},
+            {"pmid": "", "doi": "", "title": "WeakKey", "pub_year": 2019},
+        ]})
+
+    def fake_hydrator(pmid: str) -> str:
+        return f"ABSTRACT for {pmid}" if pmid == "555" else ""
+
+    r = _retriever(monkeypatch, handler)
+    recs = r.retrieve("q", hydrate_text=fake_hydrator)
+    by_id = {x.metadata.get("pmid"): x for x in recs}
+    assert by_id["555"].text == "ABSTRACT for 555"
+    assert by_id["555"].metadata["text_hydrated"] is True
+    weak = [x for x in recs if x.metadata["provenance_key"] == "title_year_weak"][0]
+    assert weak.metadata.get("text_hydrated") is False
+
+
+def test_hydrate_absent_leaves_text_unchanged(monkeypatch):
+    r = _retriever(monkeypatch, lambda req: httpx.Response(200, json={"citations": [
+        {"pmid": "9", "title": "T"}]}))
+    recs = r.retrieve("q")  # no hydrator passed
+    assert recs[0].text == "T"
+    assert recs[0].metadata["text_hydrated"] is False
