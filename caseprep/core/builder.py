@@ -37,6 +37,7 @@ from caseprep.scoring import (
 )
 from caseprep.retrievers.corpus import CorpusRetriever
 from caseprep.retrievers.corpus_semantic import SemanticCorpusRetriever
+from caseprep.retrievers.papers_ask import PapersAskRetriever
 from caseprep.retrievers.pubmed import PubMedRetriever
 from caseprep.retrievers.radiology import RadiologyRetriever
 from caseprep.retrievers.board_cards import BoardCardRecord, BoardCardRetriever
@@ -105,6 +106,7 @@ class CoreRetrieverSet:
     corpus: CorpusRetrieverProtocol
     corpus_semantic: CorpusRetrieverProtocol | None = None
     board_cards: BoardCardRetriever | None = None
+    papers_ask: CorpusRetrieverProtocol | None = None
 
 
 MAX_RETRIEVAL_CAP = 10
@@ -247,6 +249,7 @@ def default_core_retrievers() -> CoreRetrieverSet:
         corpus=CorpusRetriever(),
         corpus_semantic=SemanticCorpusRetriever(),
         board_cards=BoardCardRetriever(top_n=5),
+        papers_ask=PapersAskRetriever(),
     )
 
 
@@ -1188,6 +1191,38 @@ async def build_core_case_plan(
                 )
             )
 
+    papers_used = False
+    if provider_set.papers_ask is not None:
+        papers_used = True
+        try:
+            papers_records = await _maybe_await(
+                provider_set.papers_ask.retrieve(
+                    semantic_query,
+                    subdomain=corpus_subdomain,
+                    top_n=semantic_top_n,
+                )
+            )
+        except CasePrepError as exc:
+            warnings.append(f"PAPERS ask: {exc}")
+        else:
+            papers_records = list(papers_records)[:semantic_top_n]
+            evidence.extend(
+                _tag_evidence(
+                    papers_records,
+                    axis="PAPERS ask",
+                    query=semantic_query,
+                    case_spec=query_case_spec,
+                    family=retrieval_family,
+                    procedure_family=retrieval_family.id if retrieval_family else None,
+                    broad_profile=(
+                        retrieval_family.broad_profile
+                        if retrieval_family
+                        else query_case_spec.broad_profile.value
+                    ),
+                    retrieval_source="papers_ask",
+                )
+            )
+
     evidence = dedupe_evidence(evidence)
     quarantined_sources = _quarantined_sources(evidence)
 
@@ -1215,12 +1250,15 @@ async def build_core_case_plan(
             "corpus_subdomain": corpus_subdomain,
             "corpus_query": corpus_query,
             "semantic_query": semantic_query if semantic_used else None,
+            "papers_ask_query": semantic_query if papers_used else None,
             "semantic_enabled": semantic_used,
+            "papers_ask_enabled": papers_used,
             "caps": {
                 "pubmed_per_axis": max_per,
                 "radiology": radiology_max_results,
                 "corpus_fts5": corpus_top_n,
                 "corpus_semantic": semantic_top_n if semantic_used else None,
+                "papers_ask": semantic_top_n if papers_used else None,
             },
             "evidence_count": len(evidence),
             "sources": _source_counts(evidence),
