@@ -289,3 +289,34 @@ class TestCliBuild:
         assert "- n\n" not in captured.out
         assert "source counts:" in captured.out
         assert "- none: 0" in captured.out
+
+
+class TestBuildPdfFlag:
+    def test_build_pdf_flag_sets_request_option(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d) / "case"
+            result = BuildCasePlanResult(
+                topic="t", markdown="# m", output_dir=out, mode="core",
+                structured={},
+            )
+            builder = AsyncMock(return_value=result)
+            with patch("caseprep.cli.build_core_case_plan", builder):
+                exit_code = main(["build", "C5-6 corpectomy", "-o", str(out),
+                                  "--pdf"])
+        assert exit_code == 0
+        request = builder.await_args.args[0]
+        assert request.options.get("pdf") is True
+
+    def test_build_without_pdf_flag_leaves_options_empty(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d) / "case"
+            result = BuildCasePlanResult(
+                topic="t", markdown="# m", output_dir=out, mode="core",
+                structured={},
+            )
+            builder = AsyncMock(return_value=result)
+            with patch("caseprep.cli.build_core_case_plan", builder):
+                exit_code = main(["build", "C5-6 corpectomy", "-o", str(out)])
+        assert exit_code == 0
+        request = builder.await_args.args[0]
+        assert not request.options.get("pdf")

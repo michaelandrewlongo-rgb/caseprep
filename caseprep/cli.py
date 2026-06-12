@@ -47,6 +47,7 @@ def _cmd_build(args: argparse.Namespace) -> int:
         case_input=args.case_input,
         output_dir=args.output,
         structured_output=True,
+        options={"pdf": True} if getattr(args, "pdf", False) else {},
     )
     if args.output is None:
         request = replace(request, output_dir=request.resolved_output_dir())
@@ -203,6 +204,11 @@ def main(argv: list[str] | None = None) -> int:
         "-o", "--output",
         type=Path,
         help="Output directory (default: {slug}-caseprep/)",
+    )
+    build.add_argument(
+        "--pdf",
+        action="store_true",
+        help="Also export the case board (with textbook figures) as case-prep.pdf",
     )
 
     # ── serve ───────────────────────────────────────────────────────────

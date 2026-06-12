@@ -40,6 +40,8 @@ from caseprep.retrievers.corpus_semantic import SemanticCorpusRetriever
 from caseprep.retrievers.pubmed import PubMedRetriever
 from caseprep.retrievers.radiology import RadiologyRetriever
 from caseprep.retrievers.board_cards import BoardCardRecord, BoardCardRetriever
+from caseprep.retrievers import resolve_textbook_enabled
+from caseprep.retrievers.textbook import TextbookRetriever
 from caseprep.synthesis.section_synthesis import SectionDraft, synthesize_sections
 
 from .contracts import (
@@ -105,6 +107,7 @@ class CoreRetrieverSet:
     corpus: CorpusRetrieverProtocol
     corpus_semantic: CorpusRetrieverProtocol | None = None
     board_cards: BoardCardRetriever | None = None
+    textbook: CorpusRetrieverProtocol | None = None
 
 
 MAX_RETRIEVAL_CAP = 10
@@ -247,6 +250,7 @@ def default_core_retrievers() -> CoreRetrieverSet:
         corpus=CorpusRetriever(),
         corpus_semantic=SemanticCorpusRetriever(),
         board_cards=BoardCardRetriever(top_n=5),
+        textbook=TextbookRetriever() if resolve_textbook_enabled() else None,
     )
 
 
@@ -794,13 +798,22 @@ def _write_core_artifacts(
 
         # ── Enrichment: attach corpus evidence to each question card ───
         if provider_set is not None and not family_has_defaults:
-            semantic = provider_set.corpus_semantic
-            if semantic is not None:
+            # Answer each high-yield card from every available grounded lane:
+            # the semantic corpus AND the user's textbook library. The textbook
+            # lane carries page-grounded passages and figure paths, so a card
+            # gets answered (and illustrated) even when the corpus backend is
+            # offline.
+            from caseprep.retrievers.composite import CompositeRetriever
+
+            card_retriever = CompositeRetriever(
+                [provider_set.corpus_semantic, provider_set.textbook]
+            )
+            if card_retriever.any_lanes():
                 try:
                     enriched = enrich_manifest(
                         manifest,
                         topic=topic,
-                        retriever=semantic,
+                        retriever=card_retriever,
                         top_n=3,
                     )
                     enriched_json = json.dumps(enriched.to_dict(), indent=2) + "\n"
@@ -986,6 +999,14 @@ def _write_core_artifacts(
                 label="case_board.json",
             )
         )
+        if request.options.get("pdf"):
+            try:
+                from caseprep.export.pdf import export_board_pdf
+
+                artifacts.append(export_board_pdf(board, evidence, output_dir))
+            except Exception as exc:
+                if warnings is not None:
+                    warnings.append(f"PDF export: {exc}")
 
     return artifacts
 
@@ -1154,6 +1175,36 @@ async def build_core_case_plan(
                 retrieval_source="corpus_fts5",
             )
         )
+
+    if provider_set.textbook is not None:
+        try:
+            textbook_records = await _maybe_await(
+                provider_set.textbook.retrieve(
+                    corpus_query,
+                    subdomain=corpus_subdomain,
+                    top_n=corpus_top_n,
+                )
+            )
+        except CasePrepError as exc:
+            warnings.append(f"Textbook: {exc}")
+        else:
+            textbook_records = list(textbook_records)[:corpus_top_n]
+            evidence.extend(
+                _tag_evidence(
+                    textbook_records,
+                    axis="Textbook",
+                    query=corpus_query,
+                    case_spec=query_case_spec,
+                    family=retrieval_family,
+                    procedure_family=retrieval_family.id if retrieval_family else None,
+                    broad_profile=(
+                        retrieval_family.broad_profile
+                        if retrieval_family
+                        else query_case_spec.broad_profile.value
+                    ),
+                    retrieval_source="textbook_rag",
+                )
+            )
 
     semantic_query = topic
     semantic_used = False
